@@ -1,14 +1,19 @@
 <?php
 $allow_no_https = true;
+$script_start_time = microtime(true);
 require(AppSettings::srcPath().'/includes/connect.php');
 require(AppSettings::srcPath().'/includes/get_session.php');
+
+header('Access-Control-Allow-Origin: *');
+header('Access-Control-Allow-Methods: GET, POST');
+header("Access-Control-Allow-Headers: X-Requested-With");
 
 $uri = $_SERVER['REQUEST_URI'];
 $uri_parts = explode("/", $uri);
 
 if ($uri_parts[1] == "api") {
 	if ($uri_parts[2] == "about") {
-		$pagetitle = AppSettings::getParam('coin_brand_name')." API Documentation";
+		$pagetitle = AppSettings::getParam('site_name')." API Documentation";
 		$nav_tab_selected = "api";
 		include(AppSettings::srcPath().'/includes/html_start.php');
 		
@@ -27,11 +32,11 @@ if ($uri_parts[1] == "api") {
 		<div class="container-fluid">
 			<div class="panel panel-default" style="margin-top: 15px;">
 				<div class="panel-heading">
-					<div class="panel-title"><?php echo AppSettings::getParam('coin_brand_name'); ?> API Documentation</div>
+					<div class="panel-title"><?php echo AppSettings::getParam('site_name'); ?> API Documentation</div>
 				</div>
 				<div class="panel-body">
 					<p>
-						<?php echo AppSettings::getParam('coin_brand_name'); ?> web wallets provide several strategies for automating your <?php echo AppSettings::getParam('coin_brand_name'); ?> voting behavior.  However, some users may wish to use custom logic in their voting strategies. The <?php echo AppSettings::getParam('coin_brand_name'); ?> API allows this functionality through a standardized format for sharing <?php echo AppSettings::getParam('coin_brand_name'); ?> voting recommendations. Using the <?php echo AppSettings::getParam('coin_brand_name'); ?> API can be as simple as finding a public recommendations URL and plugging it into your <?php echo AppSettings::getParam('coin_brand_name'); ?> user account.  Or you can set up your own voting recommendations client using the information below.
+						<?php echo AppSettings::getParam('site_name'); ?> web wallets provide several strategies for automating your <?php echo AppSettings::getParam('site_name'); ?> voting behavior.  However, some users may wish to use custom logic in their voting strategies. The <?php echo AppSettings::getParam('site_name'); ?> API allows this functionality through a standardized format for sharing <?php echo AppSettings::getParam('site_name'); ?> voting recommendations. Using the <?php echo AppSettings::getParam('site_name'); ?> API can be as simple as finding a public recommendations URL and plugging it into your <?php echo AppSettings::getParam('site_name'); ?> user account.  Or you can set up your own voting recommendations client using the information below.
 					</p>
 					<p>
 						To get started, please download this example API client written in PHP.<br/>
@@ -67,7 +72,7 @@ if ($uri_parts[1] == "api") {
 		$raw = str_replace('AppSettings::getParam(\'operator_key\')', "'".$example_password."'", $raw);
 		
 		header('Content-Type: application/x-download');
-		header('Content-disposition: attachment; filename="'.AppSettings::getParam('coin_brand_name').'APIClient.php"');
+		header('Content-disposition: attachment; filename="'.AppSettings::getParam('site_name').'APIClient.php"');
 		header('Cache-Control: public, must-revalidate, max-age=0');
 		header('Pragma: public');
 		header('Content-Length: '.strlen($raw));
@@ -156,15 +161,16 @@ if ($uri_parts[1] == "api") {
 			$cards = $app->run_query($card_q, $card_params)->fetchAll(PDO::FETCH_ASSOC);
 			
 			if (count($cards) > 0) {
-				$api_output['status_code'] = 1;
 				$api_output['cards'] = $cards;
-				echo json_encode($api_output, JSON_PRETTY_PRINT);
+				$app->output_message(1, "", $api_output);
 			}
 			else $app->output_message(0, "Error: card not found.");
 		}
 	}
 	else if (count($uri_parts) >= 5 && ($uri_parts[2] == "block" || $uri_parts[2] == "blocks")) {
 		$blockchain_identifier = $uri_parts[3];
+		$no_cache = false;
+		if (!empty($_REQUEST['no_cache'])) $no_cache = true;
 		
 		if ($uri_parts[2] == "block") {
 			$block_height = (int) $uri_parts[4];
@@ -182,9 +188,10 @@ if ($uri_parts[1] == "api") {
 			$blockchain = new Blockchain($app, $db_blockchain['blockchain_id']);
 			
 			$block_params = [
-				'blockchain_id' => $blockchain->db_blockchain['blockchain_id']
+				'blockchain_id' => $blockchain->db_blockchain['blockchain_id'],
+				'complete_block' => (int)$blockchain->db_blockchain['last_complete_block']
 			];
-			$block_q = "SELECT block_id, block_hash, num_transactions, time_mined FROM blocks WHERE blockchain_id=:blockchain_id";
+			$block_q = "WHERE block_id<=:complete_block AND blockchain_id=:blockchain_id";
 			if ($uri_parts[2] == "block") {
 				$block_q .= " AND block_id=:block_id";
 				$block_params['block_id'] = $block_height;
@@ -194,36 +201,53 @@ if ($uri_parts[1] == "api") {
 				$block_params['from_block_height'] = $from_block_height;
 				$block_params['to_block_height'] = $to_block_height;
 			}
-			$block_r = $app->run_query($block_q, $block_params);
+			if ($no_cache) {
+				$app->run_query("UPDATE blocks SET transactions_html='', json_transactions='' ".$block_q, $block_params);
+			}
+			
+			$block_r = $app->run_query("SELECT block_id, block_hash, num_transactions, time_mined, json_transactions FROM blocks ".$block_q." ORDER BY block_id ASC;", $block_params);
 			
 			$blocks = [];
 			
 			while ($db_block = $block_r->fetch(PDO::FETCH_ASSOC)) {
 				$transactions = [];
 				
-				$tx_q = "SELECT transaction_id, block_id, transaction_desc, tx_hash, amount, fee_amount, time_created, position_in_block, num_inputs, num_outputs FROM transactions WHERE blockchain_id=:blockchain_id AND block_id=:block_id ORDER BY position_in_block ASC;";
-				$tx_r = $app->run_query($tx_q, [
-					'blockchain_id' => $blockchain->db_blockchain['blockchain_id'],
-					'block_id' => $db_block['block_id']
-				]);
-				
-				while ($tx = $tx_r->fetch(PDO::FETCH_ASSOC)) {
-					list($inputs, $outputs) = $app->web_api_transaction_ios($tx['transaction_id']);
-					
-					unset($tx['transaction_id']);
-					$tx['inputs'] = $inputs;
-					$tx['outputs'] = $outputs;
-					
-					array_push($transactions, $tx);
+				if (!empty($db_block['json_transactions'])) {
+					$db_block['transactions'] = json_decode($db_block['json_transactions']);
 				}
-				$db_block['transactions'] = $transactions;
+				else {
+					$tx_q = "SELECT transaction_id, block_id, transaction_desc, tx_hash, amount, fee_amount, time_created, position_in_block, num_inputs, num_outputs FROM transactions WHERE blockchain_id=:blockchain_id AND block_id=:block_id ORDER BY position_in_block ASC;";
+					$tx_r = $app->run_query($tx_q, [
+						'blockchain_id' => $blockchain->db_blockchain['blockchain_id'],
+						'block_id' => $db_block['block_id']
+					]);
+					
+					while ($tx = $tx_r->fetch(PDO::FETCH_ASSOC)) {
+						list($inputs, $outputs) = $app->web_api_transaction_ios($tx['transaction_id']);
+						
+						unset($tx['transaction_id']);
+						$tx['inputs'] = $inputs;
+						$tx['outputs'] = $outputs;
+						
+						array_push($transactions, $tx);
+					}
+					$db_block['transactions'] = $transactions;
+					
+					$app->run_query("UPDATE blocks SET json_transactions=:json_transactions WHERE blockchain_id=:blockchain_id AND block_id=:block_id;", [
+						'json_transactions' => json_encode($transactions),
+						'blockchain_id' => $blockchain->db_blockchain['blockchain_id'],
+						'block_id' => $db_block['block_id']
+					]);
+				}
+				
+				unset($db_block['json_transactions']);
 				
 				array_push($blocks, $db_block);
 			}
 			
-			$api_output['status_code'] = 1;
 			$api_output['blocks'] = $blocks;
-			echo json_encode($api_output, JSON_PRETTY_PRINT);
+			$api_output['load_time'] = round(microtime(true)-$script_start_time, 4);
+			$app->output_message(1, "", $api_output);
 		}
 	}
 	else if ($uri_parts[2] == "transactions") {
@@ -237,13 +261,18 @@ if ($uri_parts[1] == "api") {
 				$data = $_REQUEST['data'];
 				$tx = get_object_vars(json_decode($data));
 				
-				$transaction_id = $blockchain->add_transaction_from_web_api(false, $tx);
+				$existing_transaction = $blockchain->fetch_transaction_by_hash($tx['tx_hash']);
 				
-				$successful = true;
-				$db_transaction = $blockchain->add_transaction($tx['tx_hash'], false, true, $successful, false, [false], false);
-				
-				if ($db_transaction) $app->output_message(1, "Transaction successfully imported!", false);
-				else $app->output_message(4, "There was an error importing the transaction.", false);
+				if (!$existing_transaction) {
+					$transaction_id = $blockchain->add_transaction_from_web_api(false, $tx);
+					
+					$successful = true;
+					$db_transaction = $blockchain->add_transaction($tx['tx_hash'], false, true, $successful, false, [false], false);
+					
+					if ($db_transaction) $app->output_message(1, "Transaction successfully imported!", false);
+					else $app->output_message(5, "There was an error importing the transaction.", false);
+				}
+				else $app->output_message(4, "Transaction already exists.", false);
 			}
 			else $app->output_message(3, "Invalid action specified.", false);
 		}
@@ -258,21 +287,102 @@ if ($uri_parts[1] == "api") {
 			$db_blockchain['last_block_id'] = $blockchain->last_block_id();
 			unset($db_blockchain['blockchain_id']);
 			
-			echo json_encode($db_blockchain, JSON_PRETTY_PRINT);
+			$app->output_message(1, "", $db_blockchain);
 		}
 		else $app->output_message(2, "Error: invalid blockchain identifier.", false);
+	}
+	else if ($uri_parts[2] == "unconfirmed_transactions") {
+		$blockchain_identifier = $uri_parts[3];
+		$db_blockchain = $app->fetch_blockchain_by_identifier($blockchain_identifier);
+		
+		if ($db_blockchain) {
+			$blockchain = new Blockchain($app, $db_blockchain['blockchain_id']);
+			
+			$tx_q = "SELECT transaction_id, transaction_desc, tx_hash, amount, fee_amount, time_created, num_inputs, num_outputs FROM transactions WHERE blockchain_id=:blockchain_id AND block_id IS NULL;";
+			$tx_r = $app->run_query($tx_q, [
+				'blockchain_id' => $blockchain->db_blockchain['blockchain_id']
+			]);
+			
+			$transactions = [];
+			
+			while ($tx = $tx_r->fetch(PDO::FETCH_ASSOC)) {
+				list($inputs, $outputs) = $app->web_api_transaction_ios($tx['transaction_id']);
+				
+				unset($tx['transaction_id']);
+				$tx['inputs'] = $inputs;
+				$tx['outputs'] = $outputs;
+				
+				array_push($transactions, $tx);
+			}
+			
+			$app->output_message(1, "", ['transactions' => $transactions]);
+		}
+		else $app->output_message(2, "Error: invalid blockchain identifier.", false);
+	}
+	else if ($uri_parts[2] == "groups") {
+		$db_group = $app->fetch_group_by_description($_REQUEST['group']);
+		
+		list($members, $formatted_members) = $app->group_details_json($db_group);
+		
+		$app->output_message(1, "", ['members' => $formatted_members]);
+	}
+	else if ($uri_parts[2] == "txos_by_index") {
+		if (!empty($uri_parts[3]) && $db_game = $app->fetch_game_by_identifier($uri_parts[3])) {
+			$blockchain = new Blockchain($app, $db_game['blockchain_id']);
+			$game = new Game($blockchain, $db_game['game_id']);
+			
+			$partitionRange = explode(":", $uri_parts[4]);
+			
+			if (count($partitionRange) == 2) {
+				if ((string)$partitionRange[0] === (string)((int) $partitionRange[0]) && (string)$partitionRange[1] === (string)((int) $partitionRange[1])) {
+					list($fromTxoPos, $toTxoPos) = $partitionRange;
+					
+					$txos = PeerVerifier::fetchTxosByIndex($game, $fromTxoPos, $toTxoPos);
+					
+					$app->output_message(1, "Successfully fetched ".number_format(count($txos))." ".$game->db_game['name']." TXOs.", [
+						'txos' => $txos
+					]);
+				}
+				else $app->output_message(4, "Please supply valid TXO indices.");
+			}
+			else $app->output_message(3, "Please supply a range of TXO indices.");
+		}
+		else $app->output_message(2, "Please supply a valid game identifier.");
+	}
+	else if ($uri_parts[2] == "txo_checksum") {
+		if (!empty($uri_parts[3]) && $db_game = $app->fetch_game_by_identifier($uri_parts[3])) {
+			$blockchain = new Blockchain($app, $db_game['blockchain_id']);
+			$game = new Game($blockchain, $db_game['game_id']);
+			
+			if (!empty($uri_parts[4]) && (string) $uri_parts[4] == (string)((int) $uri_parts[4])) {
+				$txo = $game->fetch_game_io_by_index($uri_parts[4]);
+				
+				if (!empty($txo['partition_checksum'])) {
+					$app->output_message(1, "Successfully returned checksum for TXO #".$uri_parts[4].".", [
+						'checksum' => $txo['partition_checksum']
+					]);
+				}
+				else $app->output_message(4, "No checksum is set for that TXO.");
+			}
+			else $app->output_message(3, "Please supply a valid TXO index.");
+		}
+		else $app->output_message(2, "Please supply a valid game identifier.");
 	}
 	else if (!empty($uri_parts[2])) {
 		$game_identifier = $uri_parts[2];
 		
-		$db_game = $app->run_query("SELECT game_id, blockchain_id, maturity, pos_reward, pow_reward, round_length, payout_weight, name FROM games WHERE url_identifier=:url_identifier;", ['url_identifier'=>$game_identifier])->fetch();
+		$db_game = $app->run_query("SELECT game_id, blockchain_id, round_length, payout_weight, name FROM games WHERE url_identifier=:url_identifier;", ['url_identifier'=>$game_identifier])->fetch();
 		
 		if ($db_game) {
 			$blockchain = new Blockchain($app, $db_game['blockchain_id']);
 			$game = new Game($blockchain, $db_game['game_id']);
 			$last_block_id = $game->blockchain->last_block_id();
 			
-			if ($uri_parts[3] == "definition") {
+			if ($uri_parts[3] == "info") {
+				$api_output['status_code'] = 1;
+				$api_output['last_block_id'] = $game->last_block_id();
+			}
+			else if ($uri_parts[3] == "definition") {
 				if (empty($game->db_game['events_until_block']) || $game->db_game['events_until_block'] < $last_block_id) {
 					$api_output['status_code'] = 2;
 					$api_output['message'] = "This game is currently loading.";
@@ -287,9 +397,7 @@ if ($uri_parts[1] == "api") {
 					}
 					else {
 						$show_internal_params = false;
-						$game_def = $app->fetch_game_definition($game, "actual", $show_internal_params);
-						$game_def_str = $app->game_def_to_text($game_def);
-						$game_def_hash = $app->game_def_to_hash($game_def_str);
+						list($game_def_hash, $game_def) = GameDefinition::fetch_game_definition($game, "actual", $show_internal_params, false);
 						
 						$api_output['status_code'] = 1;
 						$api_output['definition_hash'] = $game_def_hash;
@@ -308,7 +416,7 @@ if ($uri_parts[1] == "api") {
 					$btc_currency = $app->get_currency_by_abbreviation("BTC");
 				}
 				
-				$intval_vars = ['game_id','round_length','maturity'];
+				$intval_vars = ['game_id','round_length'];
 				for ($i=0; $i<count($intval_vars); $i++) {
 					$game->db_game[$intval_vars[$i]] = (int) $game->db_game[$intval_vars[$i]];
 				}
@@ -322,7 +430,7 @@ if ($uri_parts[1] == "api") {
 					if ($user_game && $user_game['game_id'] == $game->db_game['game_id']) {
 						$api_user = new User($app, $user_game['user_id']);
 						$account_value = $game->account_balance($user_game['account_id']);
-						$immature_balance = $api_user->immature_balance($game, $user_game);
+						$unconfirmed_amount = $api_user->unconfirmed_amount($game, $user_game);
 						$mature_balance = $api_user->mature_balance($game, $user_game);
 						list($votes_available, $votes_value) = $api_user->user_current_votes($game, $last_block_id, $current_round, $user_game);
 						
@@ -330,14 +438,14 @@ if ($uri_parts[1] == "api") {
 						$api_user_info['account_id'] = intval($user_game['account_id']);
 						$api_user_info['balance'] = $account_value;
 						$api_user_info['mature_balance'] = $mature_balance;
-						$api_user_info['immature_balance'] = $immature_balance;
+						$api_user_info['unconfirmed_amount'] = $unconfirmed_amount;
 						$api_user_info['votes_available'] = $votes_available;
 						
 						$mature_utxos = [];
 						$mature_utxo_r = $app->run_query("SELECT io.*, ak.pub_key AS address FROM transaction_game_ios gio JOIN transaction_ios io ON io.io_id=gio.io_id JOIN address_keys ak ON io.address_id=ak.address_id WHERE io.spend_status='unspent' AND io.spend_transaction_id IS NULL AND ak.account_id=:account_id AND gio.game_id=:game_id AND io.create_block_id <= :ref_block GROUP BY io.io_id ORDER BY io.io_id ASC;", [
 							'account_id' => $user_game['account_id'],
 							'game_id' => $game->db_game['game_id'],
-							'ref_block' => ($last_block_id-$game->db_game['maturity'])
+							'ref_block' => $last_block_id
 						]);
 						
 						$utxo_i = 0;
@@ -357,8 +465,7 @@ if ($uri_parts[1] == "api") {
 							while ($game_io = $db_game_ios->fetch()) {
 								array_push($game_utxos, [
 									'game_io_id' => (int) $game_io['game_io_id'],
-									'coins' => (int) $game_io['colored_amount'],
-									'is_coinbase' => (int) $game_io['is_coinbase']
+									'coins' => (int) $game_io['colored_amount']
 								]);
 							}
 							$mature_utxo['game_utxos'] = $game_utxos;
@@ -380,10 +487,12 @@ if ($uri_parts[1] == "api") {
 				
 				$event_vars = [
 					'event_id',
+					'event_index',
 					'event_type_id',
 					'event_name',
 					'event_starting_block',
 					'event_final_block',
+					'payout_rate',
 					'option_name',
 					'option_name_plural'
 				];
@@ -391,7 +500,8 @@ if ($uri_parts[1] == "api") {
 				for ($i=0; $i<count($game->current_events); $i++) {
 					for ($j=0; $j<count($event_vars); $j++) {
 						$api_event[$event_vars[$j]] = $game->current_events[$i]->db_event[$event_vars[$j]];
-						if (in_array($event_vars[$j], ['event_id', 'event_type_id', 'event_starting_block', 'event_final_block'])) $api_event[$event_vars[$j]] = (int) $api_event[$event_vars[$j]];
+						if (in_array($event_vars[$j], ['event_id', 'event_index', 'event_type_id', 'event_starting_block', 'event_final_block'])) $api_event[$event_vars[$j]] = (int) $api_event[$event_vars[$j]];
+						else if ($event_vars[$j] == "payout_rate") $api_event[$event_vars[$j]] = (float) $api_event[$event_vars[$j]];
 					}
 					$api_event['options'] = [];
 					
@@ -462,17 +572,19 @@ if ($uri_parts[1] == "api") {
 						$db_option = $app->run_query("SELECT *, en.entity_name AS entity_name, et.entity_name AS entity_type FROM options op LEFT JOIN entities en ON op.entity_id=en.entity_id LEFT JOIN images i ON op.image_id=i.image_id LEFT JOIN entity_types et ON en.entity_type_id=et.entity_type_id WHERE op.event_id='".$db_event['event_id']."' AND op.event_option_index=:event_option_index;", ['event_option_index' => $event_option_index])->fetch();
 						
 						if ($db_option) {
-							$image_url = AppSettings::getParam('base_url').$app->image_url($db_option);
-							
 							$api_option = [
 								'title'=>$db_option['name'],
 								'entity'=>$db_option['entity_name'],
 								'entity_type'=>$db_option['entity_type'],
 								'event_index'=>(int)$db_event['event_index'],
 								'option_index'=>(int)$db_option['option_index'],
-								'event_option_index'=>(int)$db_option['event_option_index'],
-								'image_url'=>$image_url
+								'event_option_index'=>(int)$db_option['event_option_index']
 							];
+							
+							if (!empty($db_option['image_id'])) {
+								$image_url = AppSettings::getParam('base_url').$app->image_url($db_option);
+								$api_option['image_url'] = $image_url;
+							}
 							
 							$api_output = ['status_code'=>1, 'message'=>'Successful', 'option'=>$api_option];
 						}
@@ -485,14 +597,14 @@ if ($uri_parts[1] == "api") {
 		}
 		else $api_output = ['status_code'=>0, 'message'=>'Error: Invalid game ID'];
 		
-		echo json_encode($api_output, JSON_PRETTY_PRINT);
+		$app->output_message($api_output['status_code'], $api_output['message'] ?? "", $api_output);
 	}
 	else if ($uri == "/api/") {
 		header("Location: /api/about");
 		die();
 	}
 	else {
-		echo json_encode(['status_code'=>0, 'message'=>"You've reached an invalid URL."]);
+		$app->output_message(0, "You've reached an invalid URL.", false);
 	}
 }
 ?>

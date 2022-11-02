@@ -1,69 +1,79 @@
 <?php
 ini_set('memory_limit', '1024M');
+
+$src_path = realpath(dirname(dirname(__FILE__)))."/src";
+require_once($src_path."/classes/AppSettings.php");
+
 $skip_select_db = TRUE;
-require(AppSettings::srcPath()."/includes/connect.php");
+require($src_path."/includes/connect.php");
 
 if ($app->running_as_admin()) {
+	set_time_limit(0);
+	
 	// For CSRF protection on this page, operator_key is used instead of synchronizer_token
 	// The admin needs to visit this page before the db is installed so we can't require a user account here
 	
-	if (AppSettings::getParam('mysql_database') != "") {
-		if (strpos(AppSettings::getParam('mysql_database'), "'") === false && AppSettings::getParam('mysql_database') === strip_tags(AppSettings::getParam('mysql_database'))) {
+	if (AppSettings::getParam('database_name') != "") {
+		if (strpos(AppSettings::getParam('database_name'), "'") === false && AppSettings::getParam('database_name') === strip_tags(AppSettings::getParam('database_name'))) {
 			$db_exists = false;
 
-			$list_of_dbs = $app->run_query("SHOW DATABASES;");
-			while ($dbname = $list_of_dbs->fetch()) {
-				if ($dbname['Database'] == AppSettings::getParam('mysql_database')) $db_exists = true;
-			}
-			
-			if (strpos(AppSettings::getParam('mysql_password'), "'") !== false) {
-				echo "Your mysql password includes an apostrophe. ".AppSettings::getParam('site_name')." may not be able to install or complete migrations to your DB.<br/>\n";
-			}
-			
-			if ($db_exists) {
-				$app->select_db(AppSettings::getParam('mysql_database'));
-			}
+			if (!empty(AppSettings::getParam('sqlite_db'))) {}
 			else {
-				$app->run_query("CREATE DATABASE ".AppSettings::getParam('mysql_database'));
-				$app->select_db(AppSettings::getParam('mysql_database'));
+				$list_of_dbs = $app->run_query("SHOW DATABASES;")->fetchAll();
 				
-				$cmd = $app->mysql_binary_location()." -u ".AppSettings::getParam('mysql_user')." -h ".AppSettings::getParam('mysql_server');
-				if (AppSettings::getParam('mysql_password') != "") $cmd .= " -p'".AppSettings::getParam('mysql_password')."'";
-				$cmd .= " ".AppSettings::getParam('mysql_database')." < ".AppSettings::srcPath()."/sql/schema-initial.sql";
-				echo exec($cmd);
+				foreach ($list_of_dbs as $db_info) {
+					if ($db_info['Database'] == AppSettings::getParam('database_name')) $db_exists = true;
+				}
+				
+				if (strpos(AppSettings::getParam('mysql_password'), "'") !== false) {
+					echo "Your mysql password includes an apostrophe. ".AppSettings::getParam('site_name')." may not be able to install or complete migrations to your DB.<br/>\n";
+				}
+				
+				if ($db_exists) {
+					$app->select_db(AppSettings::getParam('database_name'));
+				}
+				else {
+					$app->run_query("CREATE DATABASE ".AppSettings::getParam('database_name'));
+					$app->select_db(AppSettings::getParam('database_name'));
+				}
+				
+				$app->flush_buffers();
+				
+				$table_exists = count($app->run_query("SHOW TABLES;")->fetchAll()) > 0;
+				
+				if (!$table_exists) {
+					$cmd = $app->mysql_binary_location()." -u ".AppSettings::getParam('mysql_user')." -h ".AppSettings::getParam('mysql_server');
+					if (AppSettings::getParam('mysql_password') != "") $cmd .= " -p'".AppSettings::getParam('mysql_password')."'";
+					
+					if (is_file(AppSettings::srcPath()."/sql/schema-base.sql")) $base_schema_path = AppSettings::srcPath()."/sql/schema-base.sql";
+					else $base_schema_path = AppSettings::srcPath()."/sql/schema-initial.sql";
+					
+					$cmd .= " ".AppSettings::getParam('database_name')." < ".$base_schema_path;
+					exec($cmd);
+				}
+				
+				$table_exists = count($app->run_query("SHOW TABLES;")->fetchAll()) > 0;
+				if (!$table_exists) {
+					echo "Database tables failed to be created, please install manually by importing all files in the \"sql\" folder via phpMyAdmin or any other MySQL interface.<br/>\n";
+					die();
+				}
+				
+				$app->load_module_classes();
+				$app->update_schema();
 			}
-			$app->load_module_classes();
-			
-			$table_exists = $app->run_query("SHOW TABLES;")->rowCount() > 0;
-			if (!$table_exists) {
-				echo "Database tables failed to be created, please install manually by importing all files in the \"sql\" folder via phpMyAdmin or any other MySQL interface.<br/>\n";
-				die();
-			}
-			
-			$app->update_schema();
 			
 			if (empty(AppSettings::getParam('identifier_case_sensitive'))) die('Please set the variable "identifier_case_sensitive" in your config file.');
 			if (empty(AppSettings::getParam('identifier_first_char'))) die('Please set the variable "identifier_first_char" in your config file.');
-			if (empty($app->get_site_constant("reference_currency_id"))) $app->set_reference_currency(6);
-			
-			if (!empty($_REQUEST['action']) && $_REQUEST['action'] == "save_blockchain_params") {
-				$blockchain_id = (int) $_REQUEST['blockchain_id'];
-				$existing_blockchain = $app->fetch_blockchain_by_id($blockchain_id);
-				
-				if ($existing_blockchain) {
-					$app->run_query("UPDATE blockchains SET rpc_host=:rpc_host, rpc_username=:rpc_username, rpc_password=:rpc_password, rpc_port=:rpc_port, first_required_block=:first_required_block WHERE blockchain_id=:blockchain_id;", [
-						'rpc_host' => $_REQUEST['rpc_host'],
-						'rpc_username' => $_REQUEST['rpc_username'],
-						'rpc_password' => $_REQUEST['rpc_password'],
-						'rpc_port' => $_REQUEST['rpc_port'],
-						'first_required_block' => $_REQUEST['first_required_block'],
-						'blockchain_id' => $existing_blockchain['blockchain_id']
-					]);
-				}
-				else die("Error, please manually save RPC parameters in the database.");
-			}
 			
 			$app->blockchain_ensure_currencies();
+			
+			if (empty($app->get_site_constant("reference_currency_id"))) {
+				$btc_currency = $app->fetch_currency_by_abbreviation("BTC");
+				if ($btc_currency) {
+					$app->set_reference_currency($btc_currency['currency_id']);
+				}
+			}
+			
 			$general_entity_type = $app->check_set_entity_type("general entity");
 			
 			require(AppSettings::srcPath()."/includes/get_session.php");
@@ -73,9 +83,6 @@ if ($app->running_as_admin()) {
 			include(AppSettings::srcPath()."/includes/html_start.php");
 			?>
 			<div class="container-fluid">
-				<h2>Install the MySQL database</h1>
-				Great, the database was installed.<br/>
-				If there was an error installing the database please use mysql to delete the database, then try again.<br/>
 				<?php
 				if (empty($thisuser)) {
 					$redirect_url = $app->get_redirect_url($_SERVER['REQUEST_URI']);
@@ -83,46 +90,36 @@ if ($app->running_as_admin()) {
 					include(AppSettings::srcPath()."/includes/html_login.php");
 				}
 				else {
+					$install_messages = $app->install_configured_games_and_blockchains($thisuser);
+					
 					if (!empty($_REQUEST['action']) && $_REQUEST['action'] == "install_module") {
 						$module_name = $_REQUEST['module_name'];
-						$games_by_module = $app->run_query("SELECT * FROM games WHERE module=:module;", ['module' => $module_name]);
 						
 						echo "<br/><b>Installing module $module_name</b><br/>\n";
 						
-						if ($games_by_module->rowCount() > 0) {
-							echo "<p>This module is already installed.</p>\n";
-						}
-						else {
-							if ($existing_module = $app->check_module($module_name)) {
-								eval('$game_def = new '.$module_name.'GameDefinition($app);');
-								
+						if ($existing_module = $app->check_module($module_name)) {
+							$module_class = $module_name.'GameDefinition';
+							$game_def = new $module_class($app);
+							
+							$conflicting_game = $app->fetch_game_by_identifier($game_def->game_def->url_identifier);
+							
+							if ($conflicting_game) {
+								echo "<p>There's already a game using this URL key.</p>\n";
+							}
+							else {
 								$blockchain = false;
 								$db_blockchain = $app->fetch_blockchain_by_identifier($game_def->game_def->blockchain_identifier);
 								
 								if ($db_blockchain) {
 									$blockchain = new Blockchain($app, $db_blockchain['blockchain_id']);
-									$new_game_def_txt = $app->game_def_to_text($game_def->game_def);
+									$new_game_def_txt = GameDefinition::game_def_to_text($game_def->game_def);
 									
 									$error_message = "";
 									$db_game = false;
-									$new_game = $app->set_game_from_definition($new_game_def_txt, $thisuser, $module_name, $error_message, $db_game, false);
+									list($new_game, $is_new_game) = GameDefinition::set_game_from_definition($app, $new_game_def_txt, $thisuser, $error_message, $db_game, false);
 									
-									if (!empty($new_game)) {
-										if ($new_game->blockchain->db_blockchain['p2p_mode'] == "none") {
-											if ($thisuser) {
-												$user_game = $thisuser->ensure_user_in_game($new_game, false);
-											}
-											$log_text = "";
-											$new_game->blockchain->new_block($log_text);
-											$transaction_id = $new_game->add_genesis_transaction($user_game);
-											if ($transaction_id < 0) $error_message = "Failed to add genesis transaction (".$transaction_id.").";
-										}
-										$new_game->blockchain->unset_first_required_block();
-										$new_game->start_game();
-										
-										$ensure_block_id = $new_game->db_game['game_starting_block'];
-										if ($new_game->db_game['finite_events'] == 1) $ensure_block_id = max($ensure_block_id, $new_game->max_gde_starting_block());
-										$new_game->ensure_events_until_block($ensure_block_id);
+									if ($new_game) {
+										$error_message = "Import was successful. <a href=\"/wallet/".$new_game->db_game['url_identifier']."/\">Play now</a>.";
 									}
 									else if (empty($error_message)) $error_message = "Error: failed to create the game.";
 									
@@ -131,15 +128,28 @@ if ($app->running_as_admin()) {
 										else echo "<pre>".json_encode($error_message, JSON_PRETTY_PRINT)."</pre>\n";
 									}
 									
-									echo "<p>Next please <a href=\"/scripts/load_game_reset.php?key=".AppSettings::getParam('operator_key')."&game_id=".$new_game->db_game['game_id']."\">reset this game</a></p>\n";
+									if ($is_new_game) {
+										list($new_game_start_error, $new_game_start_error_message) = $new_game->start_game();
+										
+										if ($new_game_start_error) echo $new_game_start_error_message."<br/>\n";
+									}
 								}
 								else echo "<p>Failed to find the blockchain.</p>\n";
 							}
-							else echo "<p>The module must already exist in DB before you can install it.</p>\n";
 						}
+						else echo "<p>The module must already exist in DB before you can install it.</p>\n";
 					}
 					?>
-					<h2>Run <?php echo AppSettings::getParam('site_name'); ?></h1>
+					<p style="margin-top: 20px;">
+						Welcome to the PolyCash install page. The information below may help you install games and resolve problems with your installation.
+					</p>
+					<?php
+					if (!empty($install_messages) && count($install_messages) > 0) {
+						echo "Installing games and blockchains from your config directory:<br/>\n";
+						echo "<pre>".implode("\n", $install_messages)."</pre>\n";
+					}
+					?>
+					<h3>Run <?php echo AppSettings::getParam('site_name'); ?></h3>
 					Make sure this line has been added to your /etc/crontab:<br/>
 <pre>
 * * * * * root <?php echo $app->php_binary_location(); ?> <?php echo str_replace("\\", "/", AppSettings::srcPath())."/cron/minutely.php"; ?>
@@ -149,12 +159,15 @@ if ($app->running_as_admin()) {
 					<br/>
 					<pre><?php echo $app->php_binary_location(); ?> <?php echo str_replace("\\", "/", AppSettings::srcPath()."/scripts/main.php"); ?></pre>
 					
-					<h2>Configure Apache for symlinked URLs</h1>
-					Please run this command:<br/>
-					<pre>a2enmod rewrite</pre>
-					
-					Then enter "AllowOverride All" in your apache configuration file (/etc/apache2/apache2.conf or /etc/httpd/httpd.conf or /etc/httpd/conf/httpd.conf)<br/>
-					Example:
+					<?php
+					if (AppSettings::getParam('server') == "Apache") {
+						?>
+						<h3>Configure Apache for symlinked URLs</h3>
+						Please run this command:<br/>
+						<pre>a2enmod rewrite</pre>
+						
+						Then enter "AllowOverride All" in your apache configuration file (/etc/apache2/apache2.conf or /etc/httpd/httpd.conf or /etc/httpd/conf/httpd.conf)<br/>
+						Example:
 <pre>
 &lt;Directory <?php echo AppSettings::publicPath(); ?>&gt;
 	Options FollowSymLinks
@@ -162,90 +175,26 @@ if ($app->running_as_admin()) {
 	Require all granted
 &lt;/Directory&gt;
 </pre>
-					
-					<h2>Install Blockchains</h2>
-					<?php
-					$blockchain_r = $app->run_query("SELECT * FROM blockchains ORDER BY blockchain_name ASC;");
-					
-					while ($db_blockchain = $blockchain_r->fetch()) {
-						$blockchain = new Blockchain($app, $db_blockchain['blockchain_id']);
-						
-						if ($db_blockchain['p2p_mode'] == "rpc") {
-							if ($db_blockchain['rpc_username'] != "" && $db_blockchain['rpc_password'] != "") $tried_rpc = true;
-							else $tried_rpc = false;
-							
-							if ($tried_rpc) {
-								echo '<div id="display_rpc_'.$db_blockchain['blockchain_id'].'">';
-								echo "<b>Connecting RPC client to ".$db_blockchain['blockchain_name']."...";
-								
-								$blockchain->load_coin_rpc();
-								$getblockchaininfo = false;
-								
-								if ($blockchain->coin_rpc) {
-									try {
-										$getblockchaininfo = $blockchain->coin_rpc->getblockchaininfo();
-									}
-									catch (Exception $e) {}
-								}
-								
-								if (!$getblockchaininfo) {
-									echo " <font class=\"redtext\">Failed to connect on port ".$db_blockchain['rpc_port']."</font></b><br/>";
-									echo "<pre>Make sure the coin daemon is running.</pre>\n";
-									echo "<br/>\n";
-								}
-								else {
-									echo " <font class=\"greentext\">Connected on port ".$db_blockchain['rpc_port']."</font></b><br/>\n";
-									echo "<pre style=\"max-height: 300px; overflow-y: scroll;\">getblockchaininfo()\n";
-									print_r($getblockchaininfo);
-									echo "</pre>";
-									
-									echo "Next, please reset and synchronize this game.<br/>\n";
-									echo "<a class=\"btn btn-primary\" target=\"_blank\" href=\"/scripts/sync_blockchain_initial.php?key=".AppSettings::getParam('operator_key')."&blockchain_id=".$db_blockchain['blockchain_id']."\">Reset & synchronize ".$db_blockchain['blockchain_name']."</a>\n";
-									echo "<br/>\n";
-								}
-								echo "<a href=\"\" onclick=\"$('#display_rpc_".$db_blockchain['blockchain_id']."').hide(); $('#edit_rpc_".$db_blockchain['blockchain_id']."').show('fast'); return false;\">Set new RPC params for ".$db_blockchain['blockchain_name']."</a>\n";
-								echo "</div>\n";
-							}
-							?>
-							<div id="edit_rpc_<?php echo $db_blockchain['blockchain_id']; ?>"<?php if ($tried_rpc) echo ' style="display: none;"'; ?>>
-								Please enter the RPC username and password for connecting to the <b><?php echo $db_blockchain['blockchain_name']; ?></b> daemon:<br/>
-								<form method="post" action="install.php">
-									<input type="hidden" name="key" value="<?php echo AppSettings::getParam('operator_key'); ?>" />
-									<input type="hidden" name="action" value="save_blockchain_params" />
-									<input type="hidden" name="blockchain_id" value="<?php echo $db_blockchain['blockchain_id']; ?>" />
-									<input class="form-control" name="rpc_host" placeholder="RPC hostname (default 127.0.0.1)" />
-									<input class="form-control" name="rpc_username" placeholder="RPC username" />
-									<input class="form-control" name="rpc_password" placeholder="RPC password" autocomplete="off" />
-									<input class="form-control" name="rpc_port" value="<?php echo $db_blockchain['default_rpc_port']; ?>" placeholder="RPC port" />
-									<input class="form-control" name="first_required_block" value="<?php echo $db_blockchain['first_required_block']; ?>" placeholder="First required block" />
-									<input type="submit" class="btn btn-primary" value="Save" />
-									<?php if ($tried_rpc) echo ' &nbsp;&nbsp; or &nbsp;&nbsp; <a href="" onclick="$(\'#display_rpc_'.$db_blockchain['blockchain_id'].'\').show(\'fast\'); $(\'#edit_rpc_'.$db_blockchain['blockchain_id'].'\').hide(); return false;">Cancel</a>'; ?>
-								</form>
-								<br/>
-							</div>
-							<br/>
-							<?php
-						}
-						else {
-							echo "<p><h3>".$db_blockchain['blockchain_name']."</h3>\n";
-							echo "<a target=\"_blank\" href=\"/scripts/sync_blockchain_initial.php?key=".AppSettings::getParam('operator_key')."&blockchain_id=".$db_blockchain['blockchain_id']."\">Reset & synchronize ".$db_blockchain['blockchain_name']."</a></p>\n";
-						}
+						<?php
 					}
-					
 					?>
-					<h2>Modules</h2>
+					<h3>Blockchains</h3>
+					To configure &amp; install blockchains, go to the <a href="/manage_blockchains/">blockchain manager</a>.
+					<br/>
+					
+					<h3>Modules</h3>
 					<?php
-					$installed_modules = $app->run_query("SELECT * FROM modules m JOIN games g ON m.primary_game_id=g.game_id;");
-					if ($installed_modules->rowCount() > 0) {
-						while ($installed_module = $installed_modules->fetch()) {
+					$installed_modules = $app->run_query("SELECT * FROM modules m JOIN games g ON m.primary_game_id=g.game_id;")->fetchAll();
+					if (count($installed_modules) > 0) {
+						foreach ($installed_modules as $installed_module) {
 							echo '<a href="/'.$installed_module['url_identifier'].'/">'.$installed_module['name']."</a> is already installed.<br/>\n";
 						}
 						echo "<br/>\n";
 					}
 					
-					$open_modules = $app->run_query("SELECT * FROM modules WHERE primary_game_id IS NULL;");
+					$open_modules = $app->run_query("SELECT * FROM modules WHERE primary_game_id IS NULL;")->fetchAll();
 					$module_html = '<option value="">-- Select a module to install --</option>';
-					while ($open_module = $open_modules->fetch()) {
+					foreach ($open_modules as $open_module) {
 						$module_html .= '<option value="'.$open_module['module_name'].'">'.$open_module['module_name']."</option>\n";
 					}
 					
@@ -263,7 +212,7 @@ if ($app->running_as_admin()) {
 		else echo "An invalid database name was specified in includes/config.php\n";
 	}
 	else {
-		echo 'Please set the "mysql_database" variable in includes/config.php'."\n";
+		echo 'Please set the "database_name" variable in includes/config.php'."\n";
 	}
 }
 else {

@@ -3,22 +3,48 @@ if (!empty($_REQUEST['redirect_key']) && empty($redirect_url)) $redirect_url = $
 ?>
 <input type="hidden" id="redirect_key" value="<?php if ($redirect_url) echo $redirect_url['redirect_key']; ?>" />
 <input type="hidden" name="invite_key" value="<?php if (!empty($_REQUEST['invite_key'])) echo $app->strong_strip_tags($app->make_alphanumeric($_REQUEST['invite_key'], "")); ?>" />
-
+<?php
+if (!empty(AppSettings::getParam('signup_content_page'))) {
+	?>
+	<script type="text/javascript">
+	thisPageManager.selected_panel = 'login';
+	</script>
+	<?php
+	include(dirname(dirname(__FILE__))."/pages/".AppSettings::getParam('signup_content_page'));
+}
+else {
+?>
 <div class="panel panel-default" style="margin-top: 15px;">
 	<div class="panel-heading">
 		<div class="panel-title">To continue, please register for a user account.</div>
 	</div>
 	<div class="panel-body">
+		<?php
+		if (empty($app->get_site_constant('admin_user_id'))) {
+			?>
+			<p>
+				<font class="text-success">
+					Thanks for installing PolyCash.<br/>
+					The user account you create now will have special privileges that allow you to install blockchains and games.<br/>
+					Be sure to remember or write down your username and password.<br/>
+					If you're installing PolyCash on a public server, please use a secure username & password.
+				</font>
+			</p>
+			<?php
+		}
+		?>
 		<p>Have you already signed up?</p>
 		<p>
 			<button class="btn btn-primary" onclick="thisPageManager.existing_account=1; thisPageManager.toggle_to_panel('login');">Yes, I already have an account</button>
 			<button class="btn btn-success" onclick="thisPageManager.existing_account=0; thisPageManager.toggle_to_panel('login');">No, I need to create an account</button>
+			<?php if (AppSettings::cardLoginsEnabled()) { ?>
 			<a href="/redeem/<?php if ($redirect_url) echo "?redirect_key=".$redirect_url['redirect_key']; ?>" class="btn btn-danger">Log in with a gift card</a>
+			<?php } ?>
 		</p>
 	</div>
 </div>
-
-<div class="panel panel-default" style="display: none;" id="login_panel">
+<?php } ?>
+<div class="panel panel-default" <?php if (empty(AppSettings::getParam('signup_content_page'))) echo 'style="display: none;" '; ?>id="login_panel">
 	<div class="panel-heading">
 		<div class="panel-title">Please enter your username or email address</div>
 	</div>

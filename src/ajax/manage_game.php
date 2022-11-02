@@ -22,13 +22,9 @@ if ($thisuser && $app->synchronizer_ok($thisuser, $_REQUEST['synchronizer_token'
 				"event_type_name_plural": "events",
 				"event_rule": "game_definition",
 				"event_winning_rule": "game_definition",
-				"event_entity_type_id": null,
-				"events_per_round": 1,
 				"inflation": "exponential",
 				"exponential_inflation_rate": 0,
-				"pos_reward": 0,
 				"round_length": 1,
-				"maturity": 0,
 				"payout_weight": "coin_round",
 				"final_round": null,
 				"buyin_policy": "for_sale",
@@ -42,9 +38,6 @@ if ($thisuser && $app->synchronizer_ok($thisuser, $_REQUEST['synchronizer_token'
 				"genesis_tx_hash": "",
 				"genesis_amount": 10000000000,
 				"game_starting_block": 1,
-				"game_winning_rule": "none",
-				"game_winning_field": "",
-				"game_winning_inflation": 0,
 				"default_payout_rate": 1,
 				"default_vote_effectiveness_function": "constant",
 				"default_effectiveness_param1": 0,
@@ -75,7 +68,8 @@ if ($thisuser && $app->synchronizer_ok($thisuser, $_REQUEST['synchronizer_token'
 					$initial_game_def = json_decode($default_game_def_txt);
 				}
 				else {
-					eval('$module = new '.$game_module.'GameDefinition($app);');
+					$module_class = $game_module."GameDefinition";
+					$module = new $module_class($app);
 					$initial_game_def = json_decode($module->game_def_base_txt);
 				}
 				
@@ -107,7 +101,6 @@ if ($thisuser && $app->synchronizer_ok($thisuser, $_REQUEST['synchronizer_token'
 					$new_game_params = [
 						'creator_id' => $thisuser->db_user['user_id'],
 						'game_status' => 'editable',
-						'featured' => 0,
 						'option_group_id' => $db_group ? $db_group['group_id'] : null,
 					];
 					
@@ -115,11 +108,16 @@ if ($thisuser && $app->synchronizer_ok($thisuser, $_REQUEST['synchronizer_token'
 						$var_type = $verbatim_vars[$i][0];
 						$var_name = $verbatim_vars[$i][1];
 						
-						if ($initial_game_def->$var_name != "") {
+						if (property_exists($initial_game_def, $var_name)) {
 							$new_game_params[$var_name] = $initial_game_def->$var_name;
 						}
 					}
+					
 					$game = Game::create_game($blockchain, $new_game_params);
+					
+					$show_internal_params = false;
+					list($initial_game_def_hash, $initial_game_def) = GameDefinition::fetch_game_definition($game, "actual", $show_internal_params, false);
+					GameDefinition::check_set_game_definition($app, $initial_game_def_hash, $initial_game_def);
 					
 					$user_game = $thisuser->ensure_user_in_game($game, false);
 					$user_strategy = $app->fetch_strategy_by_id($user_game['strategy_id']);
@@ -132,15 +130,15 @@ if ($thisuser && $app->synchronizer_ok($thisuser, $_REQUEST['synchronizer_token'
 						
 						$genesis_first_address_r = $app->run_query("SELECT * FROM transactions t JOIN transaction_ios io ON t.transaction_id=io.create_transaction_id JOIN addresses a ON io.address_id=a.address_id WHERE t.tx_hash=:genesis_tx_hash AND io.out_index=0;", [
 							'genesis_tx_hash' => $genesis_tx_hash
-						]);
-						if ($genesis_first_address_r->rowCount() == 1) {
-							$genesis_first_address = $genesis_first_address_r->fetch();
+						])->fetch();
+						if ($genesis_first_address) {
 							$escrow_address = $genesis_first_address['address'];
 						}
 					}
 					else {
 						$genesis_io_id = (int) $_REQUEST['genesis_io_id'];
 						$escrow_amount = (float) $_REQUEST['escrow_amount'];
+						$genesis_fee = (float) $_REQUEST['genesis_fee'];
 						
 						$genesis_io = $app->run_query("SELECT * FROM transaction_ios io JOIN address_keys k ON io.address_id=k.address_id JOIN currency_accounts ca ON k.account_id=ca.account_id WHERE io.io_id=:genesis_io_id AND ca.user_id=:user_id;", [
 							'genesis_io_id' => $genesis_io_id,
@@ -149,7 +147,7 @@ if ($thisuser && $app->synchronizer_ok($thisuser, $_REQUEST['synchronizer_token'
 						
 						if ($genesis_io) {
 							$escrow_amount = $escrow_amount*pow(10, $blockchain->db_blockchain['decimal_places']);
-							$fee_amount = $user_strategy['transaction_fee']*pow(10, $blockchain->db_blockchain['decimal_places']);
+							$fee_amount = (int) ($genesis_fee*pow(10, $blockchain->db_blockchain['decimal_places']));
 							$genesis_remainder = $genesis_io['amount']-$escrow_amount-$fee_amount;
 							
 							if ($escrow_amount > 0) {
@@ -194,6 +192,13 @@ if ($thisuser && $app->synchronizer_ok($thisuser, $_REQUEST['synchronizer_token'
 						'game_id' => $game->db_game['game_id']
 					]);
 					
+					list($final_game_def_hash, $final_game_def) = GameDefinition::fetch_game_definition($game, "actual", $show_internal_params, false);
+					GameDefinition::check_set_game_definition($app, $final_game_def_hash, $final_game_def);
+					
+					GameDefinition::record_migration($game, $thisuser->db_user['user_id'], "create_game_by_ui", $show_internal_params, $initial_defined_game_def, $final_defined_game_def);
+					
+					GameDefinition::set_cached_definition_hashes($game);
+					
 					$app->output_message(1, $game->db_game['url_identifier'], false);
 				}
 				else $app->output_message(5, $setup_error_message, false);
@@ -237,7 +242,7 @@ if ($thisuser && $app->synchronizer_ok($thisuser, $_REQUEST['synchronizer_token'
 		}
 		else if ($app->user_can_edit_game($thisuser, $game)) {
 			if ($action == "fetch") {
-				$switch_game = $app->run_query("SELECT game_id, blockchain_id, module, creator_id, event_rule, option_group_id, event_entity_type_id, events_per_round, event_type_name, game_status, block_timing, giveaway_status, giveaway_amount, maturity, name, payout_weight, round_length, pos_reward, pow_reward, inflation, exponential_inflation_rate, exponential_inflation_minershare, final_round, invite_cost, invite_currency, coin_name, coin_name_plural, coin_abbreviation, start_condition, start_datetime, buyin_policy, game_buyin_cap, default_vote_effectiveness_function, default_effectiveness_param1, default_max_voting_fraction, game_starting_block, escrow_address, genesis_tx_hash, genesis_amount, default_betting_mode, finite_events FROM games WHERE game_id=:game_id;", [
+				$switch_game = $app->run_query("SELECT game_id, blockchain_id, module, creator_id, event_rule, option_group_id, event_type_name, game_status, block_timing, name, payout_weight, round_length, inflation, exponential_inflation_rate, final_round, invite_cost, invite_currency, coin_name, coin_name_plural, coin_abbreviation, start_condition, buyin_policy, game_buyin_cap, default_vote_effectiveness_function, default_effectiveness_param1, default_max_voting_fraction, game_starting_block, escrow_address, genesis_tx_hash, genesis_amount, default_betting_mode, finite_events, pow_reward_type, initial_pow_reward, blocks_per_pow_reward_ajustment FROM games WHERE game_id=:game_id;", [
 					'game_id' => $game->db_game['game_id']
 				])->fetch(PDO::FETCH_ASSOC);
 				
@@ -252,9 +257,6 @@ if ($thisuser && $app->synchronizer_ok($thisuser, $_REQUEST['synchronizer_token'
 
 						$switch_game['name_disp'] = '<a target="_blank" href="/'.$game->db_game['url_identifier'].'">'.$switch_game['name'].'</a>';
 
-						$switch_game['start_date'] = date("n/j/Y", strtotime($switch_game['start_datetime']));
-						$switch_game['start_time'] = date("G", strtotime($switch_game['start_datetime']));
-						
 						$app->output_message(1, "", $switch_game);
 					}
 					else $app->output_message(2, "Access denied", false);
@@ -297,7 +299,9 @@ if ($thisuser && $app->synchronizer_ok($thisuser, $_REQUEST['synchronizer_token'
 				}
 				else if ($action == "save_gde") {
 					$show_internal_params = true;
-					$game->check_set_game_definition("defined", $show_internal_params);
+					
+					list($initial_defined_game_def_hash, $initial_defined_game_def) = GameDefinition::fetch_game_definition($game, "defined", $show_internal_params, false);
+					GameDefinition::check_set_game_definition($app, $initial_defined_game_def_hash, $initial_defined_game_def);
 					
 					$verbatim_vars = $app->event_verbatim_vars();
 					
@@ -335,14 +339,21 @@ if ($thisuser && $app->synchronizer_ok($thisuser, $_REQUEST['synchronizer_token'
 					}
 					$change_gde_q = substr($change_gde_q, 0, strlen($change_gde_q)-2);
 					
-					if ($gde_id == "new") $change_gde_q .= ";";
+					if ($gde_id == "new") {
+						$app->run_insert_query("game_defined_events", $change_gde_params);
+					}
 					else {
 						$change_gde_q .= " WHERE game_defined_event_id=:game_defined_event_id;";
 						$change_gde_params['game_defined_event_id'] = $gde['game_defined_event_id'];
+						$app->run_query($change_gde_q, $change_gde_params);
 					}
-					$app->run_query($change_gde_q, $change_gde_params);
 					
-					$game->set_cached_definition_hashes();
+					list($final_defined_game_def_hash, $final_defined_game_def) = GameDefinition::fetch_game_definition($game, "defined", $show_internal_params, false);
+					GameDefinition::check_set_game_definition($app, $final_defined_game_def_hash, $final_defined_game_def);
+					
+					GameDefinition::record_migration($game, $thisuser->db_user['user_id'], "change_event_by_ui", $show_internal_params, $initial_defined_game_def, $final_defined_game_def);
+					
+					GameDefinition::set_cached_definition_hashes($game);
 					
 					$app->output_message(1, "Changed the game definition.", false);
 				}
@@ -421,14 +432,15 @@ if ($thisuser && $app->synchronizer_ok($thisuser, $_REQUEST['synchronizer_token'
 								
 								$entity = $app->check_set_entity($entity_type['entity_type_id'], $name);
 								
-								$game->check_set_game_definition("defined", $show_internal_params);
+								list($initial_defined_game_def_hash, $initial_defined_game_def) = GameDefinition::fetch_game_definition($game, "defined", $show_internal_params, false);
+								GameDefinition::check_set_game_definition($app, $initial_defined_game_def_hash, $initial_defined_game_def);
 								
 								$option_index = (int)($app->run_query("SELECT COUNT(*) FROM game_defined_options WHERE game_id=:game_id AND event_index=:event_index;", [
 									'game_id' => $game->db_game['game_id'],
 									'event_index' => $gde['event_index']
 								])->fetch()['COUNT(*)']);
 								
-								$app->run_query("INSERT INTO game_defined_options SET game_id=:game_id, event_index=:event_index, entity_id=:entity_id, name=:name, option_index=:option_index;", [
+								$app->run_insert_query("game_defined_options", [
 									'game_id' => $game->db_game['game_id'],
 									'event_index' => $gde['event_index'],
 									'entity_id' => $entity['entity_id'],
@@ -436,7 +448,12 @@ if ($thisuser && $app->synchronizer_ok($thisuser, $_REQUEST['synchronizer_token'
 									'option_index' => $option_index
 								]);
 								
-								$game->set_cached_definition_hashes();
+								list($final_defined_game_def_hash, $final_defined_game_def) = GameDefinition::fetch_game_definition($game, "defined", $show_internal_params, false);
+								GameDefinition::check_set_game_definition($app, $final_defined_game_def_hash, $final_defined_game_def);
+								
+								GameDefinition::record_migration($game, $thisuser->db_user['user_id'], "create_event_by_ui", $show_internal_params, $initial_defined_game_def, $final_defined_game_def);
+								
+								GameDefinition::set_cached_definition_hashes($game);
 								
 								$app->output_message(1, "Changed the game definition.", false);
 							}
@@ -450,6 +467,9 @@ if ($thisuser && $app->synchronizer_ok($thisuser, $_REQUEST['synchronizer_token'
 					$gdo = $app->fetch_game_defined_option_by_id($game->db_game['game_id'], $_REQUEST['gdo_id']);
 					
 					if ($gdo) {
+						list($initial_defined_game_def_hash, $initial_defined_game_def) = GameDefinition::fetch_game_definition($game, "defined", $show_internal_params, false);
+						GameDefinition::check_set_game_definition($app, $initial_defined_game_def_hash, $initial_defined_game_def);
+						
 						$app->run_query("DELETE FROM game_defined_options WHERE game_defined_option_id=:game_defined_option_id;", [
 							'game_defined_option_id' => $gdo['game_defined_option_id']
 						]);
@@ -459,7 +479,12 @@ if ($thisuser && $app->synchronizer_ok($thisuser, $_REQUEST['synchronizer_token'
 							'option_index' => $gdo['option_index']
 						]);
 						
-						$game->set_cached_definition_hashes();
+						list($final_defined_game_def_hash, $final_defined_game_def) = GameDefinition::fetch_game_definition($game, "defined", $show_internal_params, false);
+						GameDefinition::check_set_game_definition($app, $final_defined_game_def_hash, $final_defined_game_def);
+						
+						GameDefinition::record_migration($game, $thisuser->db_user['user_id'], "delete_option_by_ui", $show_internal_params, $initial_defined_game_def, $final_defined_game_def);
+						
+						GameDefinition::set_cached_definition_hashes($game);
 						
 						$app->output_message(1, "Deleting...", false);
 					}
@@ -467,25 +492,35 @@ if ($thisuser && $app->synchronizer_ok($thisuser, $_REQUEST['synchronizer_token'
 				}
 				else $app->output_message(6, "Invalid action.", false);
 			}
-			else if (in_array($action, ['start','unpublish','complete','delete','reset'])) {
+			else if (in_array($action, ['start','publish','unpublish','complete','delete','reset'])) {
 				if ($action == "delete") $app->output_message(2, "This function is disabled", false);
 				else if ($action == "reset") {
-					$game->delete_reset_game('reset');
-					$game->start_game();
-					$app->output_message(2, "This game has been reset.", false);
+					$reset_from_block = empty($_REQUEST['from_block']) ? null : (int) $_REQUEST['from_block'];
+					if ($reset_from_block !== null) $reset_from_block = min($game->last_block_id(), $reset_from_block);
+					
+					$game->schedule_game_reset($reset_from_block);
+					
+					$app->output_message(2, "Game reset has been scheduled and will be applied shortly.", false);
 				}
 				else if ($action == "start") {
-					$game->start_game();
-					$app->output_message(2, "Successfully started the game.", false);
+					list($start_error, $start_error_message) = $game->start_game();
+					
+					if ($start_error) {
+						$app->output_message(2, $start_error_message, false);
+					}
+					else {
+						$app->output_message(1, "Successfully started the game.", ['redirect_url' => '/manage/'.$game->db_game['url_identifier'].'/?next=internal_settings']);
+					}
 				}
 				else {
 					if ($action == "unpublish") $new_status = "editable";
+					else if ($action == "publish") $new_status = "published";
 					else if ($action == "complete") $new_status = "completed";
 					
 					$error_message = $game->set_game_status($new_status);
 					if (empty($error_message)) $error_message = "Game status was successfully changed.";
 					
-					$app->output_message(2, $error_message, false);
+					$app->output_message(1, $error_message, ['redirect_url' => '/manage/'.$game->db_game['url_identifier'].'/?next=internal_settings']);
 				}
 			}
 		}

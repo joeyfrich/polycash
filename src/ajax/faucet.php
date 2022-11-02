@@ -11,26 +11,41 @@ if ($thisuser && $app->synchronizer_ok($thisuser, $_REQUEST['synchronizer_token'
 		$game = new Game($blockchain, $db_game['game_id']);
 		$user_game = $thisuser->ensure_user_in_game($game, false);
 		
-		$faucet_io = $game->check_faucet($user_game);
+		$action = $_REQUEST['action'] ?? "claim";
 		
-		if ($faucet_io) {
-			$app->run_query("UPDATE address_keys SET account_id=:account_id WHERE address_key_id=:address_key_id;", [
-				'account_id' => $user_game['account_id'],
-				'address_key_id' => $faucet_io['address_key_id']
-			]);
-			$app->run_query("UPDATE addresses SET user_id=:user_id WHERE address_id=:address_id;", [
-				'user_id' => $thisuser->db_user['user_id'],
-				'address_id' => $faucet_io['address_id']
-			]);
-			$app->run_query("UPDATE user_games SET faucet_claims=faucet_claims+1 WHERE user_game_id=:user_game_id;", [
-				'user_game_id' => $user_game['user_game_id']
-			]);
+		if ($action == "claim") {
+			$claim_count = $game->claim_max_from_faucet($user_game);
 			
-			$app->set_site_constant("last_faucet_giveaway_time", time());
-			
-			$app->output_message(1, "Successful!", false);
+			if ($claim_count > 0) $app->output_message(1, "Successful!", false);
+			else $app->output_message(4, "No money is available right now from the faucet.", false);
 		}
-		else $app->output_message(4, "No money is available right now from the faucet.", false);
+		else if ($action == "check") {
+			list($earliest_join_time, $most_recent_claim_time, $user_faucet_claims, $eligible_for_faucet, $time_available) = $game->user_faucet_info($user_game['user_id'], $user_game['game_id']);
+			
+			$faucet_message = "";
+			
+			if ($eligible_for_faucet) {
+				$faucet_io = $game->check_faucet($user_game);
+				
+				if ($faucet_io) {
+					$faucet_message .= '<p><button id="faucet_btn" class="btn btn-success" onclick="thisPageManager.claim_from_faucet();"><i class="fas fa-hand-paper"></i> &nbsp; Claim '.$game->display_coins($faucet_io['colored_amount_sum']).'</button></p>'."\n";
+				}
+				else $faucet_message .= "There's no money in the faucet right now.";
+			}
+			else {
+				if ($time_available) {
+					$ref_user_game = false;
+					$faucet_io = $game->check_faucet($ref_user_game);
+					if ($faucet_io) {
+						$faucet_message .= "You'll be eligible to claim ".$game->display_coins($faucet_io['colored_amount_sum'])." from the faucet in ".$app->format_seconds($time_available-time()).".";
+					}
+					else $faucet_message = "There's no money in the faucet right now.";
+				}
+				else $faucet_message .= "You're not eligible to claim coins from this faucet.";
+			}
+			
+			$app->output_message(1, $faucet_message);
+		}
 	}
 	else $app->output_message(3, "Invalid game ID.", false);
 }

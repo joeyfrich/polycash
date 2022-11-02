@@ -12,8 +12,13 @@ CREATE TABLE `blockchains` (
 ALTER TABLE `blockchains` ADD PRIMARY KEY (`blockchain_id`);
 ALTER TABLE `blockchains` MODIFY `blockchain_id` int(11) NOT NULL AUTO_INCREMENT;
 ALTER TABLE `blockchains` ADD `default_rpc_port` INT NULL DEFAULT NULL AFTER `rpc_port`;
+ALTER TABLE `blocks` DROP INDEX `block_id_2`;
+ALTER TABLE `blocks` DROP INDEX `game_id`;
+ALTER TABLE `blocks` DROP INDEX `game_id_2`;
 ALTER TABLE `blocks` DROP `game_id`;
 ALTER TABLE `blocks` ADD `blockchain_id` INT NULL DEFAULT NULL AFTER `internal_block_id`;
+DROP INDEX `address` ON `addresses`;
+DROP INDEX `game_id` ON `addresses`;
 ALTER TABLE `addresses`
   DROP `game_id`,
   DROP `bet_round_id`,
@@ -93,11 +98,6 @@ ALTER TABLE `games` ADD INDEX (`blockchain_id`);
 ALTER TABLE `game_types` DROP `p2p_mode`;
 ALTER TABLE `games` CHANGE `game_starting_block` `game_starting_block` INT(11) NULL DEFAULT NULL;
 UPDATE game_types SET game_starting_block=NULL;
-INSERT INTO `currencies` (`currency_id`, `oracle_url_id`, `blockchain_id`, `name`, `short_name`, `short_name_plural`, `abbreviation`, `symbol`) VALUES (NULL, NULL, NULL, 'Bitcoin', 'bitcoin', 'bitcoins', 'BTC', '&#3647;'), (NULL, NULL, NULL, 'Litecoin', 'litecoin', 'litecoins', 'LTC', 'L');
-INSERT INTO `blockchains` (`blockchain_id`, `blockchain_name`, `url_identifier`, `p2p_mode`, `coin_name`, `coin_name_plural`, `rpc_username`, `rpc_password`, `rpc_port`, `default_rpc_port`, `first_required_block`, `identifier_case_sensitive`, `identifier_first_char`, `initial_pow_reward`, `supports_getblockheader`) VALUES (NULL, 'Bitcoin', 'bitcoin', 'rpc', 'bitcoin', 'bitcoins', NULL, NULL, NULL, '8332', NULL, '1', '2', '5000000000', '1'), (NULL, 'Litecoin', 'litecoin', 'rpc', 'litecoin', 'litecoins', NULL, NULL, NULL, '9332', NULL, '1', '2', '5000000000', '0');
-UPDATE `currencies` SET `blockchain_id` = 1 WHERE `currency_id` = 6;
-UPDATE `currencies` SET `blockchain_id` = 2 WHERE `currency_id` = 7;
-ALTER TABLE blocks DROP INDEX block_id_2;
 ALTER TABLE `transaction_ios` DROP `instantly_mature`;
 ALTER TABLE `transaction_game_ios` ADD `instantly_mature` TINYINT(1) NOT NULL DEFAULT '0' AFTER `effectiveness_factor`;
 ALTER TABLE `blockchains` ADD `online` TINYINT(1) NOT NULL DEFAULT '1' AFTER `url_identifier`;

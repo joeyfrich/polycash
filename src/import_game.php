@@ -13,7 +13,7 @@ if (!empty($_REQUEST['import_mode']) && $_REQUEST['import_mode'] == "blockchain"
 $pagetitle = "Import a ";
 if ($import_mode == "game") $pagetitle .= "Game Definition";
 else $pagetitle .= "Blockchain";
-$pagetitle .= " - ".AppSettings::getParam('coin_brand_name');
+$pagetitle .= " - ".AppSettings::getParam('site_name');
 
 $nav_tab_selected = "import";
 
@@ -29,34 +29,43 @@ include(AppSettings::srcPath().'/includes/html_start.php');
 			</div>
 			<div class="panel-body">
 			<?php
-				if ($app->user_is_admin($thisuser) && $app->synchronizer_ok($thisuser, $_REQUEST['synchronizer_token'])) {
+				if ($app->user_is_admin($thisuser)) {
 					if (!empty($_REQUEST['action']) && $_REQUEST['action'] == "import_definition") {
-						$db_new_game = false;
-						$error_message = false;
-						
-						$definition = $_REQUEST['definition'];
-						
-						if ($import_mode == "game") {
-							$app->set_game_from_definition($definition, $thisuser, $error_message, $db_new_game, false);
+						if ($app->synchronizer_ok($thisuser, $_REQUEST['synchronizer_token'])) {
+							$db_new_game = false;
+							$error_message = false;
 							
-							if (!empty($error_message)) echo "<p>".$error_message."</p>\n";
+							$definition = $_REQUEST['definition'];
 							
-							echo '<p>Successfully created <a href="/'.$db_new_game['url_identifier'].'/">'.$db_new_game['name'].'</a></p>';
-						
-							if ($db_new_game) {
-								echo "<p>Your ".$import_mode." definition was successfully imported!<br/>\n";
-								echo "Please be patient as it may take several minutes for this game to sync.<br/>\n";
-								echo "Please <a href=\"/".$db_new_game['url_identifier']."/\">click here</a> to join the game.</p>\n";
+							if ($import_mode == "game") {
+								list($new_game, $is_new_game) = GameDefinition::set_game_from_definition($app, $definition, $thisuser, $error_message, $db_new_game, false);
+								
+								if (!empty($error_message)) echo "<p>".$error_message."</p>\n";
+								
+								if ($new_game) {
+									echo "<p>Your ".$import_mode." definition was successfully imported!</p>\n";
+									echo "<p>Next please join <a href=\"/wallet/".$new_game->db_game['url_identifier']."\">".$new_game->db_game['name']."</a></p>\n";
+								}
+								else {
+									echo "<p><a href=\"/import/?import_mode=".$import_mode."\">Try again</a></p>\n";
+								}
+								
+								if ($is_new_game) {
+									list($new_game_start_error, $new_game_start_error_message) = $new_game->start_game();
+									
+									if ($new_game_start_error) {
+										echo "<p>".$new_game_start_error_message."</p>\n";
+									}
+								}
 							}
 							else {
-								echo "<p><a href=\"/import/?import_mode=".$import_mode."\">Try again</a></p>\n";
+								$new_blockchain_id = $app->create_blockchain_from_definition($definition, $thisuser, $error_message);
+								$app->blockchain_ensure_currencies();
+								
+								if (!empty($error_message)) echo "<p>".$error_message."</p>\n";
 							}
 						}
-						else {
-							$app->create_blockchain_from_definition($definition, $thisuser, $error_message, $db_new_blockchain);
-							
-							if (!empty($error_message)) echo "<p>".$error_message."</p>\n";
-						}
+						else echo "<p>CSRF error</p>\n";
 					}
 					else {
 						?>

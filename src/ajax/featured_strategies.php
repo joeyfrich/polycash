@@ -7,69 +7,69 @@ if ($game && $thisuser && $app->synchronizer_ok($thisuser, $_REQUEST['synchroniz
 	$user_game = $thisuser->ensure_user_in_game($game, false);
 	$user_strategy = $game->fetch_user_strategy($user_game);
 	?>
-	<p>
-		Please select a strategy from the options below. 
-		An auto strategy stakes your coins for you so that your account gains value 24/7 without requiring you to do anything. 
-		The percentages shown below reflect recent performances but are no guarantee of future performance.
-	</p>
-	<p>
-		To write your own custom auto strategy, please see our <a href="/api/about">API documentation</a>.
-	</p>
 	<form method="get" onsubmit="thisPageManager.save_featured_strategy(); return false;">
-		<?php
-		$previous_rounds = 3;
-		$current_event = $game->current_events[0];
-		
-		$featured_strategies = $game->fetch_featured_strategies();
-		
-		while ($featured_strategy = $featured_strategies->fetch()) {
-			if ($featured_strategy['account_id'] > 0) {
-				$event_ref_block = $current_event->db_event['event_starting_block'];				
-				$performances = [];
+		<div class="modal-body">
+			<p>
+				You can select an automated betting strategy from the options below. 
+				The percentages shown here reflect recent performances but are no guarantee of future performance.
+			</p>
+			<p>
+				To write your own betting strategy, please see our <a href="/api/about">API documentation</a>.
+			</p>
+			<?php
+			$previous_rounds = 3;
+			$current_event = $game->current_events[0];
+			
+			$featured_strategies = $game->fetch_featured_strategies();
+			
+			while ($featured_strategy = $featured_strategies->fetch()) {
+				$pct_increase = null;
 				
-				for ($i=0; $i<$previous_rounds; $i++) {
-					$first_prev_event = $app->run_query("SELECT * FROM events WHERE game_id=:game_id AND event_starting_block<:event_ref_block ORDER BY event_index DESC;", [
-						'game_id' => $game->db_game['game_id'],
-						'event_ref_block' => $event_ref_block
-					])->fetch();
-					$event_ref_block = $first_prev_event['event_starting_block'];
+				if ($featured_strategy['account_id'] > 0 && $featured_strategy['reference_starting_block'] <= $game->blockchain->last_block_id()) {
+					$ref_block = $app->run_query("SELECT * FROM blocks WHERE time_mined < ".(time()-(3600*24*7))." ORDER BY block_id DESC LIMIT 1;")->fetch();
 					
-					if ($featured_strategy['reference_starting_block'] <= $first_prev_event['event_starting_block']) {
-						$ref_performance_events = $app->run_query("SELECT * FROM events WHERE game_id=:game_id AND event_starting_block=:block_id ORDER BY event_index ASC;", [
-							'game_id' => $game->db_game['game_id'],
-							'block_id' => $first_prev_event['event_starting_block']
-						]);
+					if ($ref_block) {
+						$start_bal_block = $game->blockchain->fetch_block_by_id(max($ref_block['block_id'], $featured_strategy['reference_starting_block']));
 						
-						while ($db_event = $ref_performance_events->fetch()) {
-							$bal1 = $game->account_balance_at_block($featured_strategy['account_id'], $db_event['event_final_block'], false);
-							$bal2 = $game->account_balance_at_block($featured_strategy['account_id'], $db_event['event_final_block'], true);
-							$performance = ($bal2/$bal1)-1;
-							array_push($performances, $performance);
-						}
+						$starting_balance = $game->account_balance_at_block($featured_strategy['account_id'], $start_bal_block['block_id'], true);
+						$pending_bets_params = ['account_id' => $featured_strategy['account_id']];
+						$final_balance = $game->account_balance($featured_strategy['account_id'])+$game->user_pending_bets($pending_bets_params);
+						
+						$pct_increase = 100*(($final_balance/$starting_balance)-1);
 					}
 				}
-				$performance_sum = array_sum($performances);
-				$average_performance = $performance_sum/count($performances);
-				
-				$daily_performance = pow(1+$average_performance, 3);
+				?>
+				<div class="row">
+					<div class="col-sm-6">
+						<input type="radio" name="featured_strategy_id" value="<?php echo $featured_strategy['featured_strategy_id']; ?>" id="featured_strategy_<?php echo $featured_strategy['featured_strategy_id']; ?>"<?php if ($user_strategy['featured_strategy_id'] == $featured_strategy['featured_strategy_id']) echo ' checked="checked"'; ?> /><label for="featured_strategy_<?php echo $featured_strategy['featured_strategy_id']; ?>">&nbsp; <?php echo $featured_strategy['strategy_name']; ?></label>
+					</div>
+					<div class="col-sm-6">
+						<?php
+						if ($pct_increase !== null) {
+							if ($pct_increase >= 0) echo 'Up <font class="text-success">'.round($pct_increase, 2).'%</font>';
+							else echo 'Down <font class="text-danger">'.round(-1*$pct_increase, 2).'%</font>';
+							echo " in the past ".$app->format_seconds(time() - $start_bal_block['time_mined']);
+						}
+						?>
+					</div>
+				</div>
+				<?php
 			}
 			?>
-			<div class="row bordered_row">
+			<div class="row">
 				<div class="col-sm-8">
-					<input type="radio" name="featured_strategy_id" value="<?php echo $featured_strategy['featured_strategy_id']; ?>" id="featured_strategy_<?php echo $featured_strategy['featured_strategy_id']; ?>"<?php if ($user_strategy['featured_strategy_id'] == $featured_strategy['featured_strategy_id']) echo ' checked="checked"'; ?> /><label for="featured_strategy_<?php echo $featured_strategy['featured_strategy_id']; ?>">&nbsp; <?php echo $featured_strategy['strategy_name']; ?></label>
+					<input type="radio" name="featured_strategy_id" value="0" id="featured_strategy_0"<?php if ($user_strategy['voting_strategy'] == 'manual') echo ' checked="checked"'; ?> /><label for="featured_strategy_0">&nbsp; No automated strategy</label>
 				</div>
-				<div class="col-sm-4">
-					<?php
-					if ($featured_strategy['account_id'] > 0) echo round(($daily_performance-1)*100, 2)."% per day";
-					?>
-				</div>
+				<div class="col-sm-4"></div>
 			</div>
-			<?php
-		}
-		?>
-		<div class="row bordered_row"></div>
-		
-		<button class="btn btn-success" id="featured_strategy_save_btn">Save</button>
+			<div id="featured_strategy_success" style="display: none;" class="text-success"></div>
+			<div id="featured_strategy_error" style="display: none;" class="text-danger"></div>
+		</div>
+		<div class="modal-footer">
+			<button type="button" class="btn btn-sm btn-warning" data-dismiss="modal"><i class="fas fa-times"></i> &nbsp; Close</button>
+			 &nbsp;&nbsp;or&nbsp;&nbsp; 
+			<button class="btn btn-sm btn-success" id="featured_strategy_save_btn"><i class="fas fa-check-circle"></i> &nbsp; Save</button>
+		</div>
 	</form>
 	<?php
 }

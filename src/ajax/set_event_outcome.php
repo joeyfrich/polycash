@@ -11,8 +11,9 @@ if ($thisuser && $app->synchronizer_ok($thisuser, $_REQUEST['synchronizer_token'
 		if ($db_game) {
 			$blockchain = new Blockchain($app, $db_game['blockchain_id']);
 			$game = new Game($blockchain, $db_game['game_id']);
+			$event = new Event($game, null, $db_event['event_id']);
 			
-			if ($app->user_can_edit_game($thisuser, $game)) {
+			if ($app->user_can_edit_game($thisuser, $game) && $game->allow_game_def_changes()) {
 				$user_game = $thisuser->ensure_user_in_game($game, false);
 				
 				if ($_REQUEST['action'] == "fetch") {
@@ -55,21 +56,26 @@ if ($thisuser && $app->synchronizer_ok($thisuser, $_REQUEST['synchronizer_token'
 					else {
 						$outcome_index = (int)$_REQUEST['outcome_index'];
 						
-						$gdo_r = $app->fetch_game_defined_options($game->db_game['game_id'], $db_event['event_index'], $outcome_index, false);
+						$gdo_arr = $app->fetch_game_defined_options($game->db_game['game_id'], $db_event['event_index'], $outcome_index, false)->fetchAll();
 						
-						if ($gdo_r->rowCount() == 1) $option_ok = true;
+						if (count($gdo_arr) == 1) $option_ok = true;
 						else $option_ok = false;
 					}
 					
 					if ($option_ok) {
 						$show_internal_params = false;
 						
-						$game->check_set_game_definition("defined", $show_internal_params);
+						list($initial_game_def_hash, $initial_game_def) = GameDefinition::fetch_game_definition($game, "defined", $show_internal_params, false);
+						GameDefinition::check_set_game_definition($app, $initial_game_def_hash, $initial_game_def);
 						
 						$game->set_game_defined_outcome($db_event['event_index'], $outcome_index);
 						
-						$game->check_set_game_definition("defined", $show_internal_params);
-						$game->set_cached_definition_hashes();
+						list($final_game_def_hash, $final_game_def) = GameDefinition::fetch_game_definition($game, "defined", $show_internal_params, false);
+						GameDefinition::check_set_game_definition($app, $final_game_def_hash, $final_game_def);
+						
+						GameDefinition::record_migration($game, $thisuser->db_user['user_id'], "set_outcome_by_ui", $show_internal_params, $initial_game_def, $final_game_def);
+						
+						GameDefinition::set_cached_definition_hashes($game);
 						
 						$app->output_message(2, "Changed the game definition.", false);
 					}

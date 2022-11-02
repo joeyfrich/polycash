@@ -20,7 +20,7 @@ if ($thisuser && $app->synchronizer_ok($thisuser, $_REQUEST['synchronizer_token'
 			$sale_currency_id = $sale_blockchain->currency_id();
 			
 			$satoshis_each = pow(10,$db_game['decimal_places'])*$amount_each;
-			$fee_amount = (int) (0.0001*pow(10,$sale_blockchain->db_blockchain['decimal_places']));
+			$fee_amount = (int) ($_REQUEST['set_for_sale_fee']*pow(10,$sale_blockchain->db_blockchain['decimal_places']));
 			
 			if ($quantity > 0 && $satoshis_each > 0) {
 				$total_cost_satoshis = $quantity*$satoshis_each;
@@ -28,15 +28,15 @@ if ($thisuser && $app->synchronizer_ok($thisuser, $_REQUEST['synchronizer_token'
 				$db_io = $app->fetch_io_by_id($io_id);
 				
 				if ($db_io) {
-					$gios_by_io = $sale_game->fetch_game_ios_by_io($io_id);
+					$gios_by_io = $sale_game->fetch_game_ios_by_io($io_id)->fetchAll();
 					
-					if ($gios_by_io->rowCount() > 0) {
+					if (count($gios_by_io) > 0) {
 						$game_sale_account = $sale_game->check_set_game_sale_account($thisuser);
 						
 						$game_ios = [];
 						$colored_coin_sum = 0;
 						
-						while ($game_io = $gios_by_io->fetch()) {
+						foreach ($gios_by_io as $game_io) {
 							array_push($game_ios, $game_io);
 							$colored_coin_sum += $game_io['colored_amount'];
 						}
@@ -51,49 +51,12 @@ if ($thisuser && $app->synchronizer_ok($thisuser, $_REQUEST['synchronizer_token'
 							$addresses_needed = $quantity;
 							$loop_count = 0;
 							do {
-								$addr_r = $app->run_query("SELECT * FROM addresses a WHERE a.primary_blockchain_id=:blockchain_id AND a.is_mine=1 AND a.user_id IS NULL AND a.is_destroy_address=0 AND a.is_separator_address=0 ORDER BY RAND() LIMIT 1;", [
-									'blockchain_id' => $sale_blockchain->db_blockchain['blockchain_id']
-								]);
+								$db_address = $app->new_normal_address_key($game_sale_account['currency_id'], $game_sale_account);
 								
-								if ($addr_r->rowCount() > 0) {
-									$db_address = $addr_r->fetch();
-									
-									if (empty($db_address['user_id'])) {
-										$update_addr_q = "UPDATE addresses SET user_id=:user_id WHERE address_id=:address_id;";
-										$update_addr_r = $app->run_query($update_addr_q, [
-											'user_id' => $thisuser->db_user['user_id'],
-											'address_id' => $db_address['address_id']
-										]);
-										
-										$addr_key_q = "SELECT * FROM address_keys WHERE address_id=:address_id;";
-										$addr_key_r = $app->run_query($addr_key_q, ['address_id' => $db_address['address_id']]);
-										
-										if ($addr_key_r->rowCount() > 0) {
-											$addr_key = $addr_key_r->fetch();
-											$addr_key_q = "UPDATE address_keys SET account_id=:account_id WHERE address_key_id=:address_key_id;";
-											$addr_key_r = $app->run_query($addr_key_q, [
-												'account_id' => $game_sale_account['account_id'],
-												'address_key_id' => $addr_key['address_key_id']
-											]);
-										}
-										else {
-											$addr_key = $app->insert_address_key([
-												'currency_id' => $sale_currency_id,
-												'address_id' => $db_address['address_id'],
-												'account_id' => $faucet_account['account_id'],
-												'pub_key' => $db_address['address'],
-												'option_index' => $db_address['option_index'],
-												'primary_blockchain_id' => $sale_blockchain->db_blockchain['blockchain_id']
-											]);
-										}
-										
-										$addresses_needed--;
-										
-										array_push($address_ids, $db_address['address_id']);
-										array_push($address_key_ids, $addr_key['address_key_id']);
-									}
-									else echo "Error, ".$address['address_id']." is already owned by someone.<br/>\n";
-								}
+								array_push($address_ids, $db_address['address_id']);
+								array_push($address_key_ids, $addr_key['address_key_id']);
+								
+								$addresses_needed--;
 								$loop_count++;
 							}
 							while ($addresses_needed > 0 && $loop_count < $quantity*2);
@@ -107,16 +70,19 @@ if ($thisuser && $app->synchronizer_ok($thisuser, $_REQUEST['synchronizer_token'
 							}
 							
 							$account_q = "SELECT ca.* FROM currency_accounts ca JOIN games g ON g.game_id=ca.game_id JOIN address_keys k ON k.account_id=ca.account_id WHERE ca.user_id=:user_id AND k.address_id=:address_id;";
-							$account_r = $app->run_query($account_q, [
+							$donate_account = $app->run_query($account_q, [
 								'user_id' => $thisuser->db_user['user_id'],
 								'address_id' => $game_ios[0]['address_id']
-							]);
+							])->fetch();
 							
-							if ($account_r->rowCount() > 0) {
-								$donate_account = $account_r->fetch();
-								
+							if ($donate_account) {
 								if ($total_cost_satoshis < $colored_coin_sum && $coin_sum > ($chain_coins_each*$quantity) - $fee_amount) {
 									$remainder_satoshis = $coin_sum - ($chain_coins_each*$quantity) - $fee_amount;
+									
+									if ($remainder_satoshis < 15) {
+										$fee_amount += $remainder_satoshis;
+										$remainder_satoshis = 0;
+									}
 									
 									$send_address_ids = [];
 									$amounts = [];
@@ -126,8 +92,9 @@ if ($thisuser && $app->synchronizer_ok($thisuser, $_REQUEST['synchronizer_token'
 										array_push($send_address_ids, $address_ids[$i]);
 									}
 									if ($remainder_satoshis > 0) {
+										$remainder_address_key = $app->new_normal_address_key($donate_account['currency_id'], $donate_account);
 										array_push($amounts, $remainder_satoshis);
-										array_push($send_address_ids, $game_ios[0]['address_id']);
+										array_push($send_address_ids, $remainder_address_key['address_id']);
 									}
 									
 									$error_message = false;
@@ -141,7 +108,7 @@ if ($thisuser && $app->synchronizer_ok($thisuser, $_REQUEST['synchronizer_token'
 									else echo "TX Error: ".$error_message.".<br/>\n";
 								}
 								else {
-									echo "UTXO is only ".$app->format_bignum($colored_coin_sum/pow(10,$sale_game->db_game['decimal_places']))." ".$sale_game->db_game['coin_name_plural']." but you tried to spend ".$app->format_bignum($total_cost_satoshis/pow(10,$sale_game->db_game['decimal_places']))."<br/>\n";
+									echo "UTXO is only ".$sale_game->display_coins($colored_coin_sum)." but you tried to spend ".$sale_game->display_coins($total_cost_satoshis, false, true)."<br/>\n";
 								}
 							}
 							else echo "You don't own this UTXO.<br/>\n";
@@ -162,6 +129,7 @@ if ($thisuser && $app->synchronizer_ok($thisuser, $_REQUEST['synchronizer_token'
 		$utxos_each = (int) $_REQUEST['donate_utxos_each'];
 		$quantity = (int) $_REQUEST['donate_quantity'];
 		$game_id = (int) $_REQUEST['donate_game_id'];
+		$tx_fee = (float) $_REQUEST['donate_tx_fee'];
 		
 		$db_game = $app->fetch_game_by_id($game_id);
 		
@@ -172,7 +140,7 @@ if ($thisuser && $app->synchronizer_ok($thisuser, $_REQUEST['synchronizer_token'
 			$satoshis_each = pow(10,$db_game['decimal_places'])*$amount_each;
 			$satoshis_each_utxo = ceil($satoshis_each/$utxos_each);
 			$satoshis_each = $satoshis_each_utxo*$utxos_each;
-			$fee_amount = (int)(0.0001*pow(10,$db_game['decimal_places']));
+			$fee_amount = (int)($tx_fee*pow(10,$donate_blockchain->db_blockchain['decimal_places']));
 			
 			if ($quantity > 0 && $satoshis_each > 0) {
 				$total_cost_satoshis = $quantity*$satoshis_each;
@@ -180,15 +148,15 @@ if ($thisuser && $app->synchronizer_ok($thisuser, $_REQUEST['synchronizer_token'
 				$db_io = $app->fetch_io_by_id($io_id);
 				
 				if ($db_io) {
-					$gios_by_io = $donate_game->fetch_game_ios_by_io($io_id);
+					$gios_by_io = $donate_game->fetch_game_ios_by_io($io_id)->fetchAll();
 					
-					if ($gios_by_io->rowCount() > 0) {
+					if (count($gios_by_io) > 0) {
 						$faucet_account = $donate_game->check_set_faucet_account();
 						
 						$game_ios = [];
 						$colored_coin_sum = 0;
 						
-						while ($game_io = $gios_by_io->fetch()) {
+						foreach ($gios_by_io as $game_io) {
 							array_push($game_ios, $game_io);
 							$colored_coin_sum += $game_io['colored_amount'];
 						}
@@ -204,13 +172,12 @@ if ($thisuser && $app->synchronizer_ok($thisuser, $_REQUEST['synchronizer_token'
 							$loop_count = 0;
 							
 							do {
-								$address_key = $app->new_address_key($faucet_account['currency_id'], $faucet_account);
+								$address_key = $app->new_normal_address_key($faucet_account['currency_id'], $faucet_account);
 								
-								if ($address_key['is_destroy_address'] == 0) {
-									array_push($address_ids, $address_key['address_id']);
-									array_push($address_key_ids, $address_key_id);
-									$addresses_needed--;
-								}
+								array_push($address_ids, $address_key['address_id']);
+								array_push($address_key_ids, $address_key['address_key_id']);
+								
+								$addresses_needed--;
 								$loop_count++;
 							}
 							while ($addresses_needed > 0);
@@ -224,14 +191,12 @@ if ($thisuser && $app->synchronizer_ok($thisuser, $_REQUEST['synchronizer_token'
 							}
 							
 							$account_q = "SELECT ca.* FROM currency_accounts ca JOIN games g ON g.game_id=ca.game_id JOIN address_keys k ON k.account_id=ca.account_id WHERE ca.user_id=:user_id AND k.address_id=:address_id;";
-							$account_r = $app->run_query($account_q, [
+							$donate_account = $app->run_query($account_q, [
 								'user_id' => $thisuser->db_user['user_id'],
 								'address_id' => $game_ios[0]['address_id']
-							]);
+							])->fetch();
 							
-							if ($account_r->rowCount() > 0) {
-								$donate_account = $account_r->fetch();
-								
+							if ($donate_account) {
 								if ($total_cost_satoshis < $colored_coin_sum && $coin_sum > ($chain_coins_each*$quantity*$utxos_each) - $fee_amount) {
 									$remainder_satoshis = $coin_sum - ($chain_coins_each*$quantity*$utxos_each) - $fee_amount;
 									
@@ -245,8 +210,9 @@ if ($thisuser && $app->synchronizer_ok($thisuser, $_REQUEST['synchronizer_token'
 										}
 									}
 									if ($remainder_satoshis > 0) {
+										$remainder_address_key = $app->new_normal_address_key($donate_account['currency_id'], $donate_account);
 										array_push($amounts, $remainder_satoshis);
-										array_push($send_address_ids, $game_ios[0]['address_id']);
+										array_push($send_address_ids, $remainder_address_key['address_id']);
 									}
 									
 									$error_message = false;
@@ -259,7 +225,7 @@ if ($thisuser && $app->synchronizer_ok($thisuser, $_REQUEST['synchronizer_token'
 									else echo "TX Error: ".$error_message."<br/>\n";
 								}
 								else {
-									echo "UTXO is only ".$app->format_bignum($colored_coin_sum/pow(10,$donate_game->db_game['decimal_places']))." ".$donate_game->db_game['coin_name_plural']." but you tried to spend ".$app->format_bignum($total_cost_satoshis/pow(10,$donate_game->db_game['decimal_places']))."<br/>\n";
+									echo "UTXO is only ".$donate_game->display_coins($colored_coin_sum)." but you tried to spend ".$donate_game->display_coins($total_cost_satoshis, false, true)."<br/>\n";
 								}
 							}
 							else echo "You don't own this UTXO.<br/>\n";
@@ -275,6 +241,32 @@ if ($thisuser && $app->synchronizer_ok($thisuser, $_REQUEST['synchronizer_token'
 		else echo "Invalid game ID.<br/>\n";
 		die();
 	}
+	else if ($action == "set_target_balance") {
+		$target_account = $app->fetch_account_by_id($_REQUEST['account_id']);
+		
+		if ($target_account['is_blockchain_sale_account'] && $app->user_is_admin($thisuser)) {
+			$target_balance = (float) $_REQUEST['target_balance'];
+			
+			if ($target_balance >= 0) {
+				if ($target_balance == 0) $target_balance = "";
+				
+				$app->set_target_balance($target_account['account_id'], $target_balance);
+			}
+		}
+	}
+	else if ($action == "save_settings") {
+		$settings_account_id = (int) $_REQUEST['account_id'];
+		$settings_account = $app->fetch_account_by_id($settings_account_id);
+		
+		if (!empty($settings_account) && $settings_account['user_id'] == $thisuser->db_user['user_id']) {
+			$app->run_query("UPDATE currency_accounts SET faucet_donations_on=:faucet_donations_on, faucet_target_balance=:faucet_target_balance, faucet_amount_each=:faucet_amount_each WHERE account_id=:account_id;", [
+				'faucet_donations_on' => $_REQUEST['faucet_donations_on'],
+				'faucet_target_balance' => $_REQUEST['faucet_target_balance'],
+				'faucet_amount_each' => $_REQUEST['faucet_amount_each'],
+				'account_id' => $settings_account['account_id'],
+			]);
+		}
+	}
 }
 
 $pagetitle = "My Accounts";
@@ -283,13 +275,24 @@ $nav_subtab_selected = "";
 
 if (!empty($_REQUEST['redirect_key'])) $redirect_url = $app->get_redirect_by_key($_REQUEST['redirect_key']);
 
+if (!empty($_REQUEST['account_id'])) {
+	$selected_account_id = (int) $_REQUEST['account_id'];
+	$selected_account = $app->fetch_account_by_id($selected_account_id);
+	
+	if (!empty($selected_account['game_id']) && $selected_account['user_id'] == $thisuser->db_user['user_id']) {
+		$db_game = $app->fetch_game_by_id($selected_account['game_id']);
+		$blockchain = new Blockchain($app, $db_game['blockchain_id']);
+		$game = new Game($blockchain, $db_game['game_id']);
+	}
+	$selected_account = null;
+}
+else $selected_account_id = false;
+
 include(AppSettings::srcPath().'/includes/html_start.php');
 ?>
 <div class="container-fluid">
 	<?php
 	if ($thisuser) {
-		if (!empty($_REQUEST['account_id'])) $selected_account_id = (int) $_REQUEST['account_id'];
-		else $selected_account_id = false;
 		?>
 		<script type="text/javascript">
 		thisPageManager.selected_account_id = <?php if ($selected_account_id) echo $selected_account_id; else echo 'false'; ?>;
@@ -306,10 +309,14 @@ include(AppSettings::srcPath().'/includes/html_start.php');
 					$account_q .= " AND ca.account_id=:account_id";
 					$account_params['account_id'] = $selected_account_id;
 				}
-				$account_r = $app->run_query($account_q, $account_params);
+				$accounts = $app->run_query($account_q, $account_params)->fetchAll();
+				
+				$show_balances = false;
+				if (count($accounts) <= 50 || !empty($_REQUEST['show_balances'])) $show_balances = true;
 				
 				if ($selected_account_id) {
-					$selected_account = $account_r->fetch();
+					$show_balances = true;
+					$selected_account = $accounts[0];
 					$account_r = $app->run_query($account_q, $account_params);
 					echo '
 						<div class="panel-title">Account: '.$selected_account['account_name'].'</div>
@@ -324,22 +331,29 @@ include(AppSettings::srcPath().'/includes/html_start.php');
 					</div>
 					<div class="panel-body">';
 					
-					echo "<p>You have ".$account_r->rowCount()." coin account";
-					if ($account_r->rowCount() != 1) echo "s";
+					echo "<p>You have ".count($accounts)." coin account";
+					if (count($accounts) != 1) echo "s";
 					echo ".</p>\n";
 				}
 				
-				while ($account = $account_r->fetch()) {
+				foreach ($accounts as $account) {
 					$blockchain = new Blockchain($app, $account['blockchain_id']);
+					$last_block_id = $blockchain->last_block_id();
 					
 					if ($account['game_id'] > 0) {
 						$account_game = new Game($blockchain, $account['game_id']);
-						$account_value = $account_game->account_balance($account['account_id']);
+						if ($show_balances) {
+							$game_confirmed_balance = $account_game->account_balance($account['account_id'], ['confirmed_only' => true]);
+							$game_immature_balance = $account_game->account_balance($account['account_id'], ['include_immature' => 1]);
+						}
 					}
 					else $account_game = false;
 					
 					if ($selected_account_id && $account_game) {
-						echo '<p><a href="/wallet/'.$account_game->db_game['url_identifier'].'/?action=change_user_game&user_game_id='.$account['user_game_id'].'" class="btn btn-sm btn-success">Play Now</a></p>';
+						echo '<p>';
+						echo '<a href="/wallet/'.$account_game->db_game['url_identifier'].'/?action=change_user_game&user_game_id='.$account['user_game_id'].'" class="btn btn-sm btn-success">Play Now</a> ';
+						echo '<a href="/explorer/games/'.$account_game->db_game['url_identifier'].'/my_bets/?user_game_id='.$account['user_game_id'].'" class="btn btn-sm btn-primary">My Bets</a>';
+						echo '</p>';
 					}
 					
 					echo '<div class="row">';
@@ -349,183 +363,298 @@ include(AppSettings::srcPath().'/includes/html_start.php');
 					if (!$selected_account_id) echo '</a>';
 					echo '</div>';
 					
-					$balance = $app->account_balance($account['account_id']);
+					if ($show_balances) {
+						$mature_balance = $blockchain->account_balance($account['account_id']);
+						$immature_balance = $blockchain->account_balance($account['account_id'], true);
+						$immature_amount = $blockchain->account_balance($account['account_id'], false, true);
+					}
 					
-					echo '<div class="col-sm-2 greentext" style="text-align: right">';
-					if ($account['game_id'] > 0) echo $app->format_bignum($account_value/pow(10,$account_game->db_game['decimal_places'])).' '.$account_game->db_game['coin_name_plural'];
+					echo '<div class="col-sm-2" style="text-align: right">';
+					if ($account['game_id'] > 0) {
+						if ($show_balances) {
+							echo '<font class="text-success">'.$account_game->display_coins($game_confirmed_balance).'</font>';
+							
+							if ($game_immature_balance != $game_confirmed_balance) {
+								$game_immature_amount = $game_immature_balance - $game_confirmed_balance;
+								echo ' &nbsp; <font class="text-warning">(+'.$account_game->display_coins($game_immature_amount, false, true).')</font>';
+							}
+						}
+					}
 					else echo "&nbsp;";
 					echo '</div>';
 					
-					echo '<div class="col-sm-2 greentext" style="text-align: right">';
-					echo $app->format_bignum($balance/pow(10,$blockchain->db_blockchain['decimal_places'])).' '.$account['short_name_plural'];
-					echo '</div>';
-					
-					echo '<div class="col-sm-2">';
-					if (empty($account['game_id'])) {
-						echo '<a href="" onclick="thisPageManager.toggle_account_details('.$account['account_id'].'); return false;">Deposit</a>';
-						echo ' &nbsp;&nbsp; <a href="" onclick="thisPageManager.withdraw_from_account('.$account['account_id'].', 1); return false;">Withdraw</a>';
+					echo '<div class="col-sm-2" style="text-align: right">';
+					if ($show_balances) {
+						$ready_balance = $mature_balance - $immature_amount;
+						$unready_balance = $immature_balance - $ready_balance;
+						
+						echo '<font class="text-success">'.$app->format_bignum($ready_balance/pow(10,$blockchain->db_blockchain['decimal_places'])).' '.$account['short_name_plural'].'</font>';
+						
+						if ($unready_balance > 0) {
+							echo ' &nbsp; <font class="text-warning">(+'.$app->format_bignum($unready_balance/pow(10,$blockchain->db_blockchain['decimal_places'])).')</font>';
+						}
 					}
 					echo '</div>';
 					
-					echo '<div class="col-sm-2"><a href="" onclick="thisPageManager.toggle_account_details('.$account['account_id'].'); return false;">Transactions';
-					
-					$transaction_in_params = [
-						'account_id' => $account['account_id']
-					];
-					$transaction_in_q = "SELECT * FROM transactions t JOIN transaction_ios io ON t.transaction_id=io.create_transaction_id JOIN addresses a ON a.address_id=io.address_id JOIN address_keys k ON a.address_id=k.address_id WHERE k.account_id=:account_id";
-					if ($account['game_id'] > 0) {
-						$transaction_in_q .= " AND t.blockchain_id=:blockchain_id";
-						$transaction_in_params['blockchain_id'] = $blockchain->db_blockchain['blockchain_id'];
-					}
-					$transaction_in_q .= " ORDER BY (t.block_id IS NULL) DESC, t.block_id DESC LIMIT 200;";
-					$transaction_in_r = $app->run_query($transaction_in_q, $transaction_in_params);
-					
-					$transaction_out_q = "SELECT * FROM transactions t JOIN transaction_ios io ON t.transaction_id=io.spend_transaction_id JOIN addresses a ON a.address_id=io.address_id JOIN address_keys k ON a.address_id=k.address_id WHERE k.account_id=:account_id";
-					if ($account['game_id'] > 0) $transaction_out_q .= " AND t.blockchain_id=:blockchain_id";
-					$transaction_out_q .= " ORDER BY (t.block_id IS NULL) DESC, t.block_id DESC LIMIT 200;";
-					$transaction_out_r = $app->run_query($transaction_out_q, $transaction_in_params);
-					
-					echo ' ('.($transaction_in_r->rowCount()+$transaction_out_r->rowCount()).')';
-					
-					echo '</a></div>';
-					echo "</div>\n";
-					
-					echo '<div class="row" id="account_details_'.$account['account_id'].'"';
-					if ($selected_account_id == $account['account_id']) {}
-					else echo ' style="display: none;"';
-					echo '>';
+					if ($selected_account_id) {
+						echo '<div class="col-sm-2">';
+						if (empty($account['game_id'])) {
+							echo '<a href="" onclick="thisPageManager.toggle_account_details('.$account['account_id'].'); return false;">Deposit</a>';
+							echo ' &nbsp;&nbsp; <a href="" onclick="thisPageManager.withdraw_from_account('.$account['account_id'].', 1); return false;">Withdraw</a>';
+						}
+						echo '</div>';
+						
+						echo '<div class="col-sm-2"><a href="" onclick="thisPageManager.toggle_account_details('.$account['account_id'].'); return false;">Transactions';
+						
+						$transaction_in_params = [
+							'account_id' => $account['account_id']
+						];
+						$transaction_in_q = "SELECT * FROM transactions t JOIN transaction_ios io ON t.transaction_id=io.create_transaction_id JOIN addresses a ON a.address_id=io.address_id JOIN address_keys k ON a.address_id=k.address_id WHERE k.account_id=:account_id";
+						if ($account['game_id'] > 0) {
+							$transaction_in_q .= " AND t.blockchain_id=:blockchain_id";
+							$transaction_in_params['blockchain_id'] = $blockchain->db_blockchain['blockchain_id'];
+						}
+						$transaction_in_q .= " ORDER BY (t.block_id IS NULL) DESC, t.block_id DESC LIMIT 200;";
+						$transaction_in_arr = $app->run_query($transaction_in_q, $transaction_in_params)->fetchAll();
+						
+						$transaction_out_q = "SELECT * FROM transactions t JOIN transaction_ios io ON t.transaction_id=io.spend_transaction_id JOIN addresses a ON a.address_id=io.address_id JOIN address_keys k ON a.address_id=k.address_id WHERE k.account_id=:account_id";
+						if ($account['game_id'] > 0) $transaction_out_q .= " AND t.blockchain_id=:blockchain_id";
+						$transaction_out_q .= " ORDER BY (t.block_id IS NULL) DESC, t.block_id DESC LIMIT 200;";
+						$transaction_out_arr = $app->run_query($transaction_out_q, $transaction_in_params)->fetchAll();
+						
+						echo ' ('.(count($transaction_in_arr)+count($transaction_out_arr)).')';
+						
+						echo '</a></div>';
+						echo "</div>\n";
+						
+						echo '<div class="row" id="account_details_'.$account['account_id'].'"';
+						if ($selected_account_id == $account['account_id']) {}
+						else echo ' style="display: none;"';
+						echo '>';
 
-					echo "<div class=\"account_details\">";
-					
-					echo '
-					<ul class="nav nav-tabs">
-						<li><a data-toggle="tab" href="#primary_address_'.$account['account_id'].'">Deposit Address</a></li>
-						<li><a data-toggle="tab" href="#transactions_'.$account['account_id'].'">Transactions</a></li>
-						<li><a data-toggle="tab" href="#addresses_'.$account['account_id'].'">Addresses</a></li>
-						<li><a href="/explorer/blockchains/'.$blockchain->db_blockchain['url_identifier'].'/utxos/?account_id='.$account['account_id'].'">UTXOs</a></li>
-					</ul>';
-					
-					echo '
-					<div class="tab-content">
-						<div id="primary_address_'.$account['account_id'].'" class="tab-pane fade pad-this-pane">';
-					
-					echo "<p>You can deposit ".$account['short_name_plural'];
-					if ($account_game) echo " or ".$account_game->db_game['coin_name_plural'];
-					echo " to this account by sending to:</p>";
-					echo '<a href="/explorer/blockchains/'.$blockchain->db_blockchain['url_identifier'].'/addresses/'.$account['pub_key'].'">'.$account['pub_key']."</a><br/>\n";
-					echo '<img style="margin: 10px;" src="/render_qr_code.php?data='.$account['pub_key'].'" />';
-					
-					echo '
-						</div>
-						<div id="transactions_'.$account['account_id'].'" class="tab-pane fade pad-this-pane">';
-					
-					echo "<p>Rendering ".($transaction_in_r->rowCount() + $transaction_out_r->rowCount())." transactions.</p>";
-					
-					while ($transaction = $transaction_in_r->fetch()) {
-						if ($account_game) $colored_coin_amount = $account_game->game_amount_by_io($transaction['io_id']);
+						echo "<div class=\"account_details\">";
 						
-						echo '<div class="row">';
-						echo '<div class="col-sm-4"><a href="/explorer/blockchains/'.$blockchain->db_blockchain['url_identifier'].'/addresses/'.$transaction['pub_key'].'">';
-						echo $transaction['pub_key'];
-						echo '</a></div>';
+						$account_selected_tab = isset($_REQUEST['selected_tab']) ? $_REQUEST['selected_tab'] : "";
+						if (empty($account_selected_tab) && $selected_account_id == $account['account_id']) $account_selected_tab = "primary_address";
 						
-						if ($account_game) {
-							echo '<div class="col-sm-2" style="text-align: right;"><a class="greentext" target="_blank" href="/explorer/games/'.$account_game->db_game['url_identifier'].'/transactions/'.$transaction['tx_hash'].'/">';
-							echo "+".$app->format_bignum($colored_coin_amount/pow(10,$account_game->db_game['decimal_places']))."&nbsp;".$account_game->db_game['coin_name_plural'];
-							echo '</a></div>';
-						}
-						echo '<div class="col-sm-2" style="text-align: right;"><a class="greentext" target="_blank" href="/explorer/blockchains/'.$account['blockchain_url_identifier'].'/utxo/'.$transaction['tx_hash'].'/'.$transaction['out_index'].'">';
-						echo "+".$app->format_bignum($transaction['amount']/pow(10,$blockchain->db_blockchain['decimal_places']))."&nbsp;".$account['short_name_plural'];
-						echo '</a></div>';
-						
-						echo '<div class="col-sm-2">';
-						if ($transaction['block_id'] == "") echo "<a target=\"_blank\" href=\"/explorer/blockchains/".$account['blockchain_url_identifier']."/transactions/unconfirmed/\">Not yet confirmed</a>";
-						else echo "<a target=\"_blank\" href=\"/explorer/blockchains/".$account['blockchain_url_identifier']."/blocks/".$transaction['block_id']."\">Block&nbsp;#".$transaction['block_id']."</a>";
-						echo "</div>\n";
-						
-						echo '<div class="col-sm-2">'.ucwords($transaction['spend_status']);
-						if ($transaction['spend_status'] != "spent" && $transaction['block_id'] !== "") {
-							echo "&nbsp;&nbsp;<a href=\"\" onclick=\"thisPageManager.account_start_spend_io(";
-							if ($account_game) echo $account_game->db_game['game_id'];
-							else echo 'false';
+						echo '
+						<ul class="nav nav-tabs">
+							<li '.($account_selected_tab == "primary_address" ? 'class="active" ' : '').'role="presentation"><a data-toggle="tab" href="#primary_address_'.$account['account_id'].'">Deposit Address</a></li>
+							<li '.($account_selected_tab == "transactions" ? 'class="active" ' : '').'role="presentation"><a data-toggle="tab" href="#transactions_'.$account['account_id'].'">Transactions</a></li>
+							<li '.($account_selected_tab == "addresses" ? 'class="active" ' : '').'role="presentation"><a data-toggle="tab" href="#addresses_'.$account['account_id'].'">Addresses</a></li>
+							<li '.($account_selected_tab == "settings" ? 'class="active" ' : '').'role="presentation"><a data-toggle="tab" href="#settings_'.$account['account_id'].'">Settings</a></li>';
 							
-							echo ', '.$transaction['io_id'].", ".($transaction['amount']/pow(10,$blockchain->db_blockchain['decimal_places'])).", '".$blockchain->db_blockchain['coin_name_plural']."', '";
-							if ($account_game) echo $account_game->db_game['coin_name_plural'];
-							echo "'); return false;\">Spend</a>";
+							if ($app->user_is_admin($thisuser) && $account['is_blockchain_sale_account']) {
+								echo '<li '.($account_selected_tab == "target" ? 'class="active" ' : '').'role="presentation"><a data-toggle="tab" href="#target_'.$account['account_id'].'">Target Balance</a></li>';
+							}
+						echo '</ul>';
+						
+						echo '
+						<div class="tab-content" style="padding-top: 10px;">
+							<div id="primary_address_'.$account['account_id'].'" class="tab-pane'.($account_selected_tab == "primary_address" ? ' active' : ' fade').'">';
+						
+						if (empty($account['pub_key'])) echo "<p>You haven't set a primary address for this account.</p>\n";
+						else {
+							echo "<p>You can deposit ".$account['short_name_plural'];
+							if ($account_game) echo " or ".$account_game->db_game['coin_name_plural'];
+							echo " to this account by sending to:</p>";
+							echo '<a href="/explorer/blockchains/'.$blockchain->db_blockchain['url_identifier'].'/addresses/'.$account['pub_key'].'">'.$account['pub_key']."</a><br/>\n";
+							echo '<img style="margin: 10px;" src="/render_qr_code.php?data='.$account['pub_key'].'" />';
 						}
-						echo '</div>';
 						
 						echo "</div>\n";
-					}
-					
-					while ($transaction = $transaction_out_r->fetch()) {
-						if ($account_game) $colored_coin_amount = $account_game->game_amount_by_io($transaction['io_id']);
 						
-						echo '<div class="row">';
-						echo '<div class="col-sm-4"><a href="/explorer/blockchains/'.$blockchain->db_blockchain['url_identifier'].'/addresses/'.$transaction['pub_key'].'">';
-						echo $transaction['pub_key'];
-						echo '</a></div>';
+						if ($app->user_is_admin($thisuser) && $account['is_blockchain_sale_account']) {
+							echo '<div id="target_'.$account['account_id'].'" class="tab-pane'.($account_selected_tab == "target" ? ' active' : ' fade').'">';
+							if ($selected_account_id) {
+								?>
+								<form method="post" action="/accounts/?account_id=<?php echo $account['account_id']; ?>">
+									<input type="hidden" name="account_id" value="<?php echo $account['account_id']; ?>" />
+									<input type="hidden" name="synchronizer_token" value="<?php echo $thisuser->get_synchronizer_token(); ?>" />
+									<input type="hidden" name="action" value="set_target_balance" />
+									<input type="hidden" name="selected_tab" value="target" />
+									
+									<div class="form-group">
+										<label for="target_balance_<?php echo $account['account_id']; ?>">Target balance:</label>
+										<div class="row">
+											<div class="col-sm-4">
+												<input type="text" name="target_balance" id="target_balance_<?php echo $account['account_id']; ?>" class="form-control" value="<?php echo $account['target_balance']; ?>" />
+											</div>
+											<div class="col-sm-8 form-control-static">
+												<?php echo $blockchain->db_blockchain['coin_name_plural']; ?>
+											</div>
+										</div>
+									</div>
+									<input type="submit" class="btn btn-success" value="Save" />
+								</form>
+								<?php
+							}
+							echo "</div>\n";
+						}
 						
-						if ($account_game) {
-							echo '<div class="col-sm-2" style="text-align: right;"><a class="redtext" target="_blank" href="/explorer/games/'.$account_game->db_game['url_identifier'].'/transactions/'.$transaction['tx_hash'].'">';
-							echo "-".$app->format_bignum($colored_coin_amount/pow(10,$account_game->db_game['decimal_places']))."&nbsp;".$account_game->db_game['coin_name_plural'];
+						echo '<div id="transactions_'.$account['account_id'].'" class="tab-pane'.($account_selected_tab == "transactions" ? ' active' : ' fade').'">';
+						
+						echo "<p>Rendering ".(count($transaction_in_arr) + count($transaction_out_arr))." transactions.</p>";
+						
+						foreach ($transaction_in_arr as $transaction) {
+							if ($account_game) $colored_coin_amount = $account_game->game_amount_by_io($transaction['io_id']);
+							
+							echo '<div class="row">';
+							echo '<div class="col-sm-4"><a href="/explorer/blockchains/'.$blockchain->db_blockchain['url_identifier'].'/addresses/'.$transaction['pub_key'].'">';
+							echo $transaction['pub_key'];
 							echo '</a></div>';
+							
+							if ($transaction['is_mature'] == 0 || $transaction['create_block_id'] == "") $io_render_class = "text-warning";
+							else $io_render_class = "text-success";
+							
+							if ($account_game) {
+								echo '<div class="col-sm-2" style="text-align: right;"><a class="'.$io_render_class.'" target="_blank" href="/explorer/games/'.$account_game->db_game['url_identifier'].'/transactions/'.$transaction['tx_hash'].'/">';
+								echo "+".str_replace(" ", "&nbsp;", $account_game->display_coins($colored_coin_amount));
+								echo '</a></div>';
+							}
+							
+							echo '<div class="col-sm-2" style="text-align: right;"><a class="'.$io_render_class.'" target="_blank" href="/explorer/blockchains/'.$account['blockchain_url_identifier'].'/utxo/'.$transaction['tx_hash'].'/'.$transaction['out_index'].'">';
+							echo "+".$app->format_bignum($transaction['amount']/pow(10,$blockchain->db_blockchain['decimal_places']))."&nbsp;".$account['short_name_plural'];
+							echo '</a></div>';
+							
+							echo '<div class="col-sm-2">';
+							if ($transaction['block_id'] == "") echo "<a target=\"_blank\" href=\"/explorer/blockchains/".$account['blockchain_url_identifier']."/transactions/unconfirmed/\">Not yet confirmed</a>";
+							else echo "<a target=\"_blank\" href=\"/explorer/blockchains/".$account['blockchain_url_identifier']."/blocks/".$transaction['block_id']."\">Block&nbsp;#".$transaction['block_id']."</a>";
+							echo "</div>\n";
+							
+							echo '<div class="col-sm-2">';
+							
+							if ($transaction['is_mature'] == 0) {
+								$mature_on_block = $transaction['create_block_id'] + $blockchain->db_blockchain['coinbase_maturity'] - 1;
+								$blocks_til_maturity = $mature_on_block - $last_block_id;
+								echo 'Immature ('.$blocks_til_maturity.' block'.($blocks_til_maturity == 1 ? '' : 's').' left)';
+							}
+							else echo ucwords($transaction['spend_status']);
+							
+							if ($transaction['spend_status'] != "spent" && $transaction['is_mature']) {
+								echo "&nbsp;&nbsp;<a href=\"\" onclick=\"thisPageManager.account_start_spend_io(";
+								if ($account_game) echo $account_game->db_game['game_id'];
+								else echo 'false';
+								
+								echo ', '.$transaction['io_id'].", ".($transaction['amount']/pow(10,$blockchain->db_blockchain['decimal_places'])).", '".$blockchain->db_blockchain['coin_name_plural']."', '";
+								if ($account_game) echo $account_game->db_game['coin_name_plural'];
+								echo "'); return false;\">Spend</a>";
+							}
+							echo '</div>';
+							
+							echo "</div>\n";
 						}
 						
-						echo '<div class="col-sm-2" style="text-align: right;"><a class="redtext" target="_blank" href="/explorer/blockchains/'.$account['blockchain_url_identifier'].'/transactions/'.$transaction['tx_hash'].'">';
-						echo "-".$app->format_bignum($transaction['amount']/pow(10,$blockchain->db_blockchain['decimal_places']))."&nbsp;".$account['short_name_plural'];
-						echo '</a></div>';
+						foreach ($transaction_out_arr as $transaction) {
+							if ($account_game) $colored_coin_amount = $account_game->game_amount_by_io($transaction['io_id']);
+							
+							echo '<div class="row">';
+							echo '<div class="col-sm-4"><a href="/explorer/blockchains/'.$blockchain->db_blockchain['url_identifier'].'/addresses/'.$transaction['pub_key'].'">';
+							echo $transaction['pub_key'];
+							echo '</a></div>';
+							
+							if ($account_game) {
+								echo '<div class="col-sm-2" style="text-align: right;"><a class="redtext" target="_blank" href="/explorer/games/'.$account_game->db_game['url_identifier'].'/transactions/'.$transaction['tx_hash'].'">';
+								echo "-".$account_game->display_coins($colored_coin_amount);
+								echo '</a></div>';
+							}
+							
+							echo '<div class="col-sm-2" style="text-align: right;"><a class="redtext" target="_blank" href="/explorer/blockchains/'.$account['blockchain_url_identifier'].'/transactions/'.$transaction['tx_hash'].'">';
+							echo "-".$app->format_bignum($transaction['amount']/pow(10,$blockchain->db_blockchain['decimal_places']))."&nbsp;".$account['short_name_plural'];
+							echo '</a></div>';
+							
+							echo '<div class="col-sm-2">';
+							if ($transaction['block_id'] == "") echo "<a target=\"_blank\" href=\"/explorer/blockchains/".$account['blockchain_url_identifier']."/transactions/unconfirmed/\">Not yet confirmed</a>";
+							else echo "<a target=\"_blank\" href=\"/explorer/blockchains/".$account['blockchain_url_identifier']."/blocks/".$transaction['block_id']."\">Block&nbsp;#".$transaction['block_id']."</a>";
+							echo '</div>';
+							
+							echo '</div>';
+						}
 						
-						echo '<div class="col-sm-2">';
-						if ($transaction['block_id'] == "") echo "<a target=\"_blank\" href=\"/explorer/blockchains/".$account['blockchain_url_identifier']."/transactions/unconfirmed/\">Not yet confirmed</a>";
-						else echo "<a target=\"_blank\" href=\"/explorer/blockchains/".$account['blockchain_url_identifier']."/blocks/".$transaction['block_id']."\">Block&nbsp;#".$transaction['block_id']."</a>";
-						echo '</div>';
+						echo '
+							</div>
+							<div id="addresses_'.$account['account_id'].'" class="tab-pane'.($account_selected_tab == "addresses" ? ' active' : ' fade').'">';
+						$addr_arr = $app->run_query("SELECT * FROM addresses a JOIN address_keys k ON a.address_id=k.address_id WHERE k.account_id=:account_id ORDER BY a.option_index ASC LIMIT 500;", [
+							'account_id' => $account['account_id']
+						])->fetchAll();
+						echo "<p>This account has ".count($addr_arr)." addresses.</p>";
 						
-						echo '</div>';
-					}
-					
-					echo '
+						echo '<div style="max-height: 400px; overflow-x: hidden; overflow-y: scroll;">';
+						
+						foreach ($addr_arr as $address) {
+							$address_balance = $blockchain->address_balance_at_block($address, false);
+							if ($account_game) $game_balance = $account_game->address_balance_at_block($address, false);
+							
+							echo '<div class="row">';
+							
+							$balance_disp = $app->format_bignum($address_balance/pow(10, $blockchain->db_blockchain['decimal_places']));
+							echo '<div class="col-sm-2">'.$balance_disp.' '.($balance_disp=="1" ? $blockchain->db_blockchain['coin_name'] : $blockchain->db_blockchain['coin_name_plural']).'</div>';
+							
+							if ($account_game) {
+								echo '<div class="col-sm-2">'.$account_game->display_coins($game_balance).'</div>';
+							}
+							
+							echo '<div class="col-sm-2">'.$address['vote_identifier'].' (#'.$address['option_index'].')';
+							if ($address['is_destroy_address'] == 1) echo ' <font class="redtext">Destroy Address</font>';
+							if ($address['is_separator_address'] == 1) echo ' <font class="yellowtext">Separator Address</font>';
+							if ($address['is_passthrough_address'] == 1) echo ' <font class="yellowtext">Passthrough Address</font>';
+							echo '</div>';
+							
+							echo '<div class="col-sm-4"><a href="/explorer/blockchains/'.$blockchain->db_blockchain['url_identifier'].'/addresses/'.$address['address'].'">'.$address['address'].'</a></div>';
+							
+							echo '<div class="col-sm-2">';
+							if ($address['is_separator_address'] == 0 && $address['is_destroy_address'] == 0 && $address['is_passthrough_address'] == 0) {
+								echo '<a href="" onclick="thisPageManager.manage_addresses('.$account['account_id'].', \'set_primary\', '.$address['address_id'].');">Set as Primary</a>';
+							}
+							echo '</div>';
+							
+							echo "</div>\n";
+						}
+						
+						echo "</div>\n";
+						
+						echo '<br/><p><button class="btn btn-sm btn-primary" onclick="thisPageManager.manage_addresses('.$account['account_id'].', \'new\', false);">New Address</button></p>';
+						echo '
+							</div>';
+						?>
+						<div id="settings_<?php echo $account['account_id']; ?>" class="tab-pane<?php echo $account_selected_tab == "settings" ? ' active' : ' fade'; ?>">
+							<?php if ($account_game) { ?>
+								<form action="/accounts/?account_id=<?php echo $account['account_id']; ?>" method="post">
+									<input type="hidden" name="action" value="save_settings" />
+									<input type="hidden" name="synchronizer_token" value="<?php echo $thisuser->get_synchronizer_token(); ?>" />
+									<div class="form-group">
+										<label for="faucet_donations_on">Would you like to make recurring donations to the faucet account for <?php echo $account_game->db_game['name']; ?>?</label>
+										<select class="form-control" id="faucet_donations_on" name="faucet_donations_on" onChange="faucet_donations_on_changed(this);">
+											<option value="0">No</option>
+											<option value="1" <?php if ($account['faucet_donations_on'] == 1) echo 'selected="selected"'; ?>>Yes</option>
+										</select>
+									</div>
+									<div id="faucet_donation_params">
+										<div class="form-group">
+											<label for="faucet_target_balance">What do you want to donate the faucet's balance up to?</label>
+											<input type="text" class="form-control" id="faucet_target_balance" name="faucet_target_balance" value="<?php echo $account['faucet_target_balance']; ?>" />
+										</div>
+										<div class="form-group">
+											<label for="faucet_amount_each">How many <?php echo $account_game->db_game['coin_name_plural']; ?> should each person receive per faucet claim?</label>
+											<input type="text" class="form-control" id="faucet_amount_each" name="faucet_amount_each" value="<?php echo $account['faucet_amount_each']; ?>" />
+										</div>
+									</div>
+									<button class="btn btn-sm btn-primary">Save Settings</button>
+								</form>
+								<script type="text/javascript">
+								function faucet_donations_on_changed(selectEl) {
+									if (selectEl.value == 0) document.getElementById('faucet_donation_params').style.display = "none";
+									else document.getElementById('faucet_donation_params').style.display = "block";
+								}
+								faucet_donations_on_changed(document.getElementById('faucet_donations_on'));
+								</script>
+							<?php } ?>
 						</div>
-						<div id="addresses_'.$account['account_id'].'" class="tab-pane fade pad-this-pane">';
-					$addr_r = $app->run_query("SELECT * FROM addresses a JOIN address_keys k ON a.address_id=k.address_id WHERE k.account_id=:account_id ORDER BY a.option_index ASC LIMIT 500;", [
-						'account_id' => $account['account_id']
-					]);
-					echo "<p>This account has ".$addr_r->rowCount()." addresses.</p>";
-					
-					while ($address = $addr_r->fetch()) {
-						$address_balance = $blockchain->address_balance_at_block($address, false);
-						if ($account_game) $game_balance = $account_game->address_balance_at_block($address, false);
-						
-						echo '<div class="row">';
-						
-						echo '<div class="col-sm-2">'.$app->format_bignum($address_balance/pow(10, $blockchain->db_blockchain['decimal_places'])).' '.$blockchain->db_blockchain['coin_name_plural'].'</div>';
-						
-						if ($account_game) {
-							echo '<div class="col-sm-2">'.$app->format_bignum($game_balance/pow(10, $account_game->db_game['decimal_places'])).' '.$account_game->db_game['coin_name_plural'].'</div>';
-						}
-						
-						echo '<div class="col-sm-2">'.$address['vote_identifier'].' (#'.$address['option_index'].')';
-						if ($address['is_destroy_address'] == 1) echo ' <font class="redtext">Destroy Address</font>';
-						if ($address['is_separator_address'] == 1) echo ' <font class="yellowtext">Separator Address</font>';
-						echo '</div>';
-						
-						echo '<div class="col-sm-4"><a href="/explorer/blockchains/'.$blockchain->db_blockchain['url_identifier'].'/addresses/'.$address['address'].'">'.$address['address'].'</a></div>';
-						
-						echo '<div class="col-sm-2">';
-						if ($address['is_separator_address'] == 0 && $address['is_destroy_address'] == 0) {
-							echo '<a href="" onclick="thisPageManager.manage_addresses('.$account['account_id'].', \'set_primary\', '.$address['address_id'].');">Set as Primary</a>';
-						}
-						echo '</div>';
+						<?php
+						echo "</div>\n";
 						
 						echo "</div>\n";
 					}
-					
-					echo '<br/><p><button class="btn btn-sm btn-primary" onclick="thisPageManager.manage_addresses('.$account['account_id'].', \'new\', false);">New Address</button></p>';
-					echo '
-						</div>
-					</div>';
-					
-					echo "</div>\n";
 					echo "</div>\n";
 				}
 				?>
@@ -565,7 +694,6 @@ include(AppSettings::srcPath().'/includes/html_start.php');
 						<select class="form-control" id="create_account_action" onchange="thisPageManager.create_account_step(1);">
 							<option value="">-- Please Select --</option>
 							<option value="for_blockchain">Create a new blockchain account</option>
-							<option value="by_rpc_account">Import an existing account by RPC</option>
 						</select>
 					</div>
 					<div class="form-group" id="create_account_step2" style="display: none;">
@@ -573,8 +701,8 @@ include(AppSettings::srcPath().'/includes/html_start.php');
 						<select class="form-control" id="create_account_blockchain_id" onchange="thisPageManager.create_account_step(2);">
 							<option value="">-- Please Select --</option>
 							<?php
-							$all_blockchains = $app->run_query("SELECT * FROM blockchains ORDER BY blockchain_name ASC;");
-							while ($db_blockchain = $all_blockchains->fetch()) {
+							$all_blockchains = $app->run_query("SELECT * FROM blockchains ORDER BY blockchain_name ASC;")->fetchAll();
+							foreach ($all_blockchains as $db_blockchain) {
 								echo '<option value="'.$db_blockchain['blockchain_id'].'">'.$db_blockchain['blockchain_name'].'</option>'."\n";
 							}
 							?>
@@ -604,7 +732,7 @@ include(AppSettings::srcPath().'/includes/html_start.php');
 								<option value="withdraw">Spend</option>
 								<option value="split">Split into pieces</option>
 								<option value="buyin">Buy in to a game</option>
-								<option value="faucet">Donate to a faucet</option>
+								<option value="faucet">Donate to faucet</option>
 								<option value="set_for_sale">Set as for sale</option>
 								<option value="join_tx">Join with another UTXO</option>
 							</select>
@@ -623,8 +751,7 @@ include(AppSettings::srcPath().'/includes/html_start.php');
 									<div class="row">
 										<div class="col-sm-8"><input type="text" class="form-control" id="spend_withdraw_amount" style="text-align: right;" /></div>
 										<div class="col-sm-4">
-											<select class="form-control" id="spend_withdraw_coin_type">
-											</select>
+											<select class="form-control" id="spend_withdraw_coin_type" required="required"></select>
 										</div>
 									</div>
 								</div>
@@ -640,6 +767,7 @@ include(AppSettings::srcPath().'/includes/html_start.php');
 								</div>
 							</form>
 						</div>
+						<?php if ($account_game) { ?>
 						<div id="account_spend_faucet" style="display: none;">
 							<form action="/accounts/" method="get">
 								<input type="hidden" name="action" value="donate_to_faucet" />
@@ -660,6 +788,10 @@ include(AppSettings::srcPath().'/includes/html_start.php');
 									<input type="text" class="form-control" name="donate_quantity" />
 								</div>
 								<div class="form-group">
+									<label for="donate_tx_fee">Transaction fee:</label>
+									<input type="text" class="form-control" name="donate_tx_fee" value="<?php echo $account_game->db_game['default_transaction_fee']; ?>" />
+								</div>
+								<div class="form-group">
 									<button class="btn btn-primary">Donate to Faucet</button>
 								</div>
 							</form>
@@ -672,15 +804,19 @@ include(AppSettings::srcPath().'/includes/html_start.php');
 								<input type="hidden" name="synchronizer_token" value="<?php echo $thisuser->get_synchronizer_token(); ?>" />
 								
 								<div class="form-group">
-									<label for="donate_amount_each">How many in-game coins should be in each UTXO?</label>
-									<input type="text" class="form-control" name="set_for_sale_amount_each" />
+									<label for="set_for_sale_amount_each">How many in-game coins do you want to transfer to the sale account?</label>
+									<input type="text" class="form-control" name="set_for_sale_amount_each" id="set_for_sale_amount_each" />
+								</div>
+								<div class="form-group" style="display: none;">
+									<label for="set_for_sale_quantity">How many UTXOs do you want to make?</label>
+									<input type="text" class="form-control" name="set_for_sale_quantity" id="set_for_sale_quantity" value="1" />
 								</div>
 								<div class="form-group">
-									<label for="donate_quantity">How many UTXOs do you want to make?</label>
-									<input type="text" class="form-control" name="set_for_sale_quantity" />
+									<label for="set_for_sale_fee">What fee do you want to pay to get this TX confirmed?</label>
+									<input type="text" class="form-control" name="set_for_sale_fee" id="set_for_sale_fee" value="<?php echo $account_game->db_game['default_transaction_fee']; ?>" />
 								</div>
 								<div class="form-group">
-									<button class="btn btn-primary">Set for sale</button>
+									<button class="btn btn-success">Set for sale</button>
 								</div>
 							</form>
 						</div>
@@ -690,7 +826,7 @@ include(AppSettings::srcPath().'/includes/html_start.php');
 								<input type="hidden" name="synchronizer_token" value="<?php echo $thisuser->get_synchronizer_token(); ?>" />
 								
 								<div class="form-group">
-									<label for="split_amount_each">How many coins should be in each UTXO?</label>
+									<label for="split_amount_each">How many <?php echo $account_game->db_game['coin_name_plural']; ?> should be in each UTXO?</label>
 									<input type="text" class="form-control" name="split_amount_each" id="split_amount_each" />
 								</div>
 								<div class="form-group">
@@ -704,7 +840,7 @@ include(AppSettings::srcPath().'/includes/html_start.php');
 											<input type="text" class="form-control" name="split_fee" id="split_fee" placeholder="0.0001" />
 										</div>
 										<div class="col-sm-4 form-control-static">
-											<?php if ($selected_account_id) echo $blockchain->db_blockchain['coin_name_plural']; ?>
+											<?php if ($selected_account_id && !empty($blockchain)) echo $blockchain->db_blockchain['coin_name_plural']; ?>
 										</div>
 									</div>
 								</div>
@@ -713,6 +849,7 @@ include(AppSettings::srcPath().'/includes/html_start.php');
 								</div>
 							</form>
 						</div>
+						<?php } ?>
 						<div id="account_spend_buyin" style="display: none;">
 							<br/>
 							<p>
@@ -723,8 +860,8 @@ include(AppSettings::srcPath().'/includes/html_start.php');
 								<?php
 								$my_games = $app->run_query("SELECT * FROM user_games ug JOIN games g ON ug.game_id=g.game_id WHERE ug.user_id=:user_id GROUP BY g.game_id ORDER BY g.name ASC;", [
 									'user_id' => $thisuser->db_user['user_id']
-								]);
-								while ($db_game = $my_games->fetch()) {
+								])->fetchAll();
+								foreach ($my_games as $db_game) {
 									echo "<option value=\"".$db_game['game_id']."\">".$db_game['name']."</option>\n";
 								}
 								?>

@@ -13,7 +13,7 @@ if ($app->running_as_admin()) {
 	if ($game) {
 		$action = 'reset';
 		if (!empty($_REQUEST['action']) && $_REQUEST['action'] == "delete") $action = "delete";
-		$process_lock_name = "load_game";
+		$process_lock_name = "load_game_".$game->db_game['game_id'];
 		
 		echo "Waiting for game loading script to finish";
 		do {
@@ -24,15 +24,16 @@ if ($app->running_as_admin()) {
 		}
 		while ($process_locked);
 		
-		echo "now resetting the game<br/>\n";
-		$app->flush_buffers();
+		$app->print_debug("now resetting the game");
 		
 		$app->set_site_constant($process_lock_name, getmypid());
 		
 		$game->delete_reset_game($action);
-		$game->start_game();
+		list($start_error, $start_error_message) = $game->start_game();
 		
-		echo "Great, ".$game->db_game['name']." has been ".$action."!\n";
+		$app->print_debug($game->db_game['name']." has been ".$action."!");
+		
+		if ($start_error) $app->print_debug($start_error_message);
 		
 		$app->set_site_constant($process_lock_name, 0);
 	}

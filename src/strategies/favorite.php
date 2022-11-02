@@ -21,6 +21,10 @@ if ($user_game) {
 	$sec_between_applications = 60*60*$hours_between_applications;
 	$rand_sec_offset = rand(0, $sec_between_applications*2);
 	
+	if ($game->last_block_id() != $blockchain->last_block_id()) {
+		$app->output_message(9, "The game is not fully loaded.", false);
+		die();
+	}
 	if ($user_game['time_next_apply'] == "" || $user_game['time_next_apply'] <= time() || !empty($_REQUEST['force'])) {
 		$account = $app->fetch_account_by_id($user_game['account_id']);
 		
@@ -29,7 +33,7 @@ if ($user_game) {
 		if ($account) {
 			$event_q = "SELECT * FROM events ev JOIN options op ON ev.event_id=op.event_id WHERE ev.game_id=:game_id AND op.target_probability IS NOT NULL";
 			$event_q .= " AND ev.event_starting_block <= :mining_block_id AND ev.event_final_block > :mining_block_id";
-			$event_q .= " AND (ev.event_starting_time IS NULL OR ev.event_starting_time < NOW()) AND (ev.event_final_time IS NULL OR ev.event_final_time > NOW()) GROUP BY ev.event_id ORDER BY ev.event_index ASC;";
+			$event_q .= " AND (ev.event_starting_time IS NULL OR ev.event_starting_time < ".AppSettings::sqlNow().") AND (ev.event_final_time IS NULL OR ev.event_final_time > ".AppSettings::sqlNow().") GROUP BY ev.event_id ORDER BY ev.event_index ASC;";
 			$db_events = $app->run_query($event_q, [
 				'game_id' => $game->db_game['game_id'],
 				'mining_block_id' => $mining_block_id
@@ -53,7 +57,7 @@ if ($user_game) {
 					$coins_per_event = ($mature_balance*$frac_mature_bal/$num_events)/pow(10, $game->db_game['decimal_places']);
 				}
 				else {
-					list($user_votes, $votes_value) = $thisuser->user_current_votes($game, $last_block_id, $round_id, $user_game);
+					list($user_votes, $votes_value) = $user->user_current_votes($game, $last_block_id, $round_id, $user_game);
 					$coins_per_event = ceil($votes_value/$num_events)/pow(10, $game->db_game['decimal_places']);
 				}
 				
@@ -68,7 +72,7 @@ if ($user_game) {
 					$io_ids = [];
 					$keep_looping = true;
 					
-					while ($keep_looping && $io = $spendable_ios_in_account->fetch()) {
+					while ($io = $spendable_ios_in_account->fetch()) {
 						$game_amount_sum += $io['coins'];
 						$io_amount_sum += $io['amount'];
 						
@@ -86,9 +90,9 @@ if ($user_game) {
 						if ($amount_mode != "inflation_only" && $game_amount_sum >= $burn_game_amount*1.2) $keep_looping = false;
 					}
 					
-					$recycle_io = $app->fetch_recycle_ios_in_account($account['account_id'], 1)[0];
+					$recycle_ios = $app->fetch_recycle_ios_in_account($account['account_id'], false);
 					
-					if ($recycle_io) {
+					foreach ($recycle_ios as $recycle_io) {
 						array_push($io_ids, $recycle_io['io_id']);
 						$io_amount_sum += $recycle_io['amount'];
 					}

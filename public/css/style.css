@@ -2,13 +2,20 @@ html, body {
 	overflow-x: hidden;
 	font-display: swap;
 }
+.content-wrapper {
+	background-color:#EFF3F8;
+}
+.panel-default > .panel-heading {
+	background-color: #fff ! important;
+}
+
 .polycash_header {
 	position: relative;
 	text-align: center;
 	background-color: #333;
 	color: #fff;
 	overflow: hidden;
-	min-width: 300px;
+	min-width: 200px;
 }
 .polycash_header_bg {
 	position: absolute;
@@ -22,7 +29,7 @@ html, body {
 }
 .polycash_header_content {
 	position: relative;
-	padding: 50px 10px;
+	padding: 35px 10px;
 	width: 100%;
 	height: auto;
 	overflow: visible;
@@ -137,9 +144,6 @@ and (max-device-width : 480px) {
 }
 .yellowtext {
 	color: #fa0;
-}
-.pad-this-pane {
-	padding-top: 10px;
 }
 .responsive_input {
 	width: 100%;
@@ -537,9 +541,46 @@ a.selected {
 }
 .buyin_sellout_list {
 	border: 1px solid #aaa;
-	padding: 5px;
+	padding: 0px 5px;
 	margin: 5px 0px;
-	max-height: 100px;
+	max-height: 150px;
 	overflow-x: hidden;
 	overflow-y: scroll;
+}
+.buyin_sellout_list .row {
+	line-height: 200%;
+}
+.buyin_sellout_list .content_row:hover {
+	background-color: #f4f4f4;
+}
+.buyin_sellout_list .header_row {
+	border-bottom: 1px solid #aaa;
+}
+.my_bets_row {
+	line-height: 180%;
+}
+.my_bets_row:hover {
+	background-color: #f4f4f4;
+}
+#explorer_block_list .row {
+	line-height: 180%;
+}
+#explorer_block_list .row:hover {
+	background-color: #f4f4f4;
+}
+.my_votes_table .row {
+	line-height: 180% ! important;
+}
+.footer_peer_count {
+	color: #fff;
+	display: inline-block;
+	text-align: center;
+	min-width: 19px;
+	height: 19px;
+	border-radius: 10px;
+	padding: 0px;
+	margin: 0px 5px;
+	font-size: 11px;
+	line-height: 21px;
+	cursor: pointer;
 }

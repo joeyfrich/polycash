@@ -1,5 +1,6 @@
 <?php
 require_once(dirname(dirname(__FILE__))."/includes/connect.php");
+if (AppSettings::getParam('disable_address_generation')) die("This function is disabled.\n");
 
 $script_start_time = microtime(true);
 $allowed_params = ['print_debug', 'game_id'];
@@ -15,7 +16,7 @@ if ($app->running_as_admin()) {
 	if (!$process_locked) {
 		$app->set_site_constant($process_lock_name, getmypid());
 		
-		$buffer_address_sets = 5;
+		$buffer_address_sets = 3;
 		$script_target_time = 49;
 		$loop_target_time = 10;
 		
@@ -23,10 +24,9 @@ if ($app->running_as_admin()) {
 		$running_games = [];
 		$blockchains = [];
 		
-		if ($print_debug) {
-			echo "Giving addresses to users.\n";
-			$app->flush_buffers();
-		}
+		if ($print_debug) $app->print_debug("Giving addresses to users.");
+		
+		$need_address_blockchain_ids = [];
 		
 		for ($game_i=0; $game_i<count($db_running_games); $game_i++) {
 			if (empty($blockchains[$db_running_games[$game_i]['blockchain_id']])) $blockchains[$db_running_games[$game_i]['blockchain_id']] = new Blockchain($app, $db_running_games[$game_i]['blockchain_id']);
@@ -34,20 +34,21 @@ if ($app->running_as_admin()) {
 			
 			list($from_option_index, $to_option_index) = $running_games[$game_i]->option_index_range();
 			
+			echo $running_games[$game_i]->db_game['name']." to ".$to_option_index."\n";
+			
 			if ($to_option_index !== false) {
 				$user_games = $app->run_query("SELECT * FROM user_games ug JOIN currency_accounts ca ON ug.account_id=ca.account_id JOIN users u ON ug.user_id=u.user_id WHERE ug.game_id=:game_id AND ca.has_option_indices_until<:to_option_index ORDER BY ca.account_id ASC;", [
 					'game_id' => $running_games[$game_i]->db_game['game_id'],
 					'to_option_index' => $to_option_index
-				]);
+				])->fetchAll();
 				
-				if ($print_debug) {
-					echo "Looping through ".$user_games->rowCount()." users for ".$running_games[$game_i]->db_game['name'].".<br/>\n";
-					$app->flush_buffers();
-				}
+				if ($print_debug) $app->print_debug("Looping through ".count($user_games)." users for ".$running_games[$game_i]->db_game['name'].".");
 				
-				while ($user_game = $user_games->fetch()) {
+				foreach ($user_games as $user_game) {
 					$user = new User($app, $user_game['user_id']);
 					$user->generate_user_addresses($running_games[$game_i], $user_game);
+					$user_game_account = $app->fetch_account_by_id($user_game['account_id']);
+					if ($user_game_account['has_option_indices_until'] < $to_option_index) $need_address_blockchain_ids[$running_games[$game_i]->db_game['blockchain_id']] = true;
 					if ($print_debug) {
 						echo ". ";
 						$app->flush_buffers();
@@ -56,11 +57,7 @@ if ($app->running_as_admin()) {
 			}
 		}
 		
-		$need_address_blockchain_ids = [];
-		if ($print_debug) {
-			echo "Now filling address sets for ".count($db_running_games)." games.<br/>\n";
-			$app->flush_buffers();
-		}
+		if ($print_debug) $app->print_debug("Now filling address sets for ".count($db_running_games)." games.");
 		
 		for ($game_i=0; $game_i<count($running_games); $game_i++) {
 			list($from_option_index, $to_option_index) = $running_games[$game_i]->option_index_range();
@@ -74,7 +71,7 @@ if ($app->running_as_admin()) {
 					$num_sets_needed = $buffer_address_sets-count($game_addrsets);
 					
 					for ($new_addrset_i=0; $new_addrset_i<$num_sets_needed; $new_addrset_i++) {
-						$app->run_query("INSERT INTO address_sets SET game_id=:game_id;", [
+						$app->run_insert_query("address_sets", [
 							'game_id' => $running_games[$game_i]->db_game['game_id']
 						]);
 					}
@@ -98,20 +95,15 @@ if ($app->running_as_admin()) {
 				
 				if ((int)$unallocated_separator_info['COUNT(*)'] < $min_unallocated_separators) {
 					$need_address_blockchain_ids[$blockchain_id] = true;
-					if ($print_debug) {
-						echo $blockchain->db_blockchain['blockchain_name']." needs ".$min_unallocated_separators." but only has ".$unallocated_separator_info['COUNT(*)']."\n";
-						$app->flush_buffers();
-					}
+					
+					if ($print_debug) $app->print_debug($blockchain->db_blockchain['blockchain_name']." needs ".$min_unallocated_separators." but only has ".$unallocated_separator_info['COUNT(*)']);
 				}
 			}
 		}
 		
 		$need_address_blockchain_ids = array_keys($need_address_blockchain_ids);
 		
-		if ($print_debug) {
-			echo "Now generating addresses for ".count($need_address_blockchain_ids)." blockchains.\n";
-			$app->flush_buffers();
-		}
+		if ($print_debug) $app->print_debug("Now generating addresses for ".count($need_address_blockchain_ids)." blockchains.");
 		
 		if (count($need_address_blockchain_ids) > 0) {
 			$need_address_db_blockchains = $app->run_query("SELECT * FROM blockchains WHERE blockchain_id IN (".implode(",", array_map("intval", $need_address_blockchain_ids)).");")->fetchAll();

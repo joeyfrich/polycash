@@ -13,9 +13,11 @@ if (empty($nav_tab_selected)) $nav_tab_selected = "";
 	
 	<link rel="preload" href="/css/jquery.ui.css" as="style" onload="this.rel='stylesheet'">
 	<link rel="preload" href="/css/jquery.nouislider.css" as="style" onload="this.rel='stylesheet'">
+	<link rel="preload" href="/css/jquery.datatables.css" as="style" onload="this.rel='stylesheet'">
 	<link rel="preload" href="/css/fontawesome-all.min.css" as="style" onload="this.rel='stylesheet'">
 	
 	<link rel="stylesheet" type="text/css" href="/css/style.css<?php if (!empty(AppSettings::getParam('cachebuster'))) echo '?v='.AppSettings::getParam('cachebuster'); ?>" />
+	<?php if (!empty(AppSettings::getParam('custom_stylesheet'))) { ?><link rel="stylesheet" type="text/css" href="/css/<?php echo AppSettings::getParam('custom_stylesheet'); ?>"><?php } ?>
 	<link rel="stylesheet" type="text/css" href="/css/skin-blue.min.css">
 	<link rel="stylesheet" href="/css/AdminLTE.min.css">
 	<link rel="stylesheet" href="/css/bootstrap.min.css">
@@ -32,12 +34,24 @@ if (empty($nav_tab_selected)) $nav_tab_selected = "";
 
   gtag('config', '<?php echo AppSettings::getParam('ga_tracking_id'); ?>');
 </script>
-<?php } ?>
-<body class="hold-transition skin-blue sidebar-mini">
+<?php
+}
+
+$left_menu_open = 1;
+if (AppSettings::getParam('pageview_tracking_enabled')) {
+	if (empty($viewer_id)) $viewer_id = $pageviewController->insert_pageview($thisuser);
+	$viewer = $pageviewController->get_viewer($viewer_id);
+	$left_menu_open = $viewer['left_menu_open'];
+}
+else if ($thisuser) $left_menu_open = $thisuser->db_user['left_menu_open'];
+?>
+<body class="hold-transition skin-blue sidebar-mini<?php if ($left_menu_open == 0) echo ' sidebar-collapse'; ?>">
 <div class="wrapper">
 	<header class="main-header">
 		<a href="/" class="logo">
+			<?php if (empty(AppSettings::getParam('override_logo_text'))) { ?>
 			<span class="logo-lg"><img src="/images/polycash-logo-sm-2.png" /></span>
+			<?php } else echo AppSettings::getParam('override_logo_text'); ?>
 		</a>
 
 		<!-- Header Navbar -->
@@ -49,10 +63,12 @@ if (empty($nav_tab_selected)) $nav_tab_selected = "";
 			<div class="navbar-custom-menu">
 				<ul class="nav navbar-nav">
 					<li><a href="/"><i class="fas fa-home"></i> &nbsp; <span>Home</span></a></li>
+					<?php if (empty(AppSettings::getParam('limited_navigation'))) { ?>
 					<?php if (is_file(AppSettings::srcPath()."/pages/about.php")) { ?><li><a href="/about/"><i class="fas fa-info-circle"></i> &nbsp; <span>About</span></a></li><?php } ?>
 					<li><a target="_blank" href="https://medium.com/polycash"><i class="fas fa-rss-square"></i> &nbsp; <span>Our Blog</span></a></li>
 					<li><a href="/pages/PolyCash-whitepaper-v3.pdf"><i class="fas fa-file-alt"></i> &nbsp; <span>Whitepaper</span></a></li>
 					<li><a target="_blank" href="https://github.com/PolyCash/polycash"><i class="fas fa-code"></i> &nbsp; <span>Source Code</span></a></li>
+					<?php } ?>
 					<?php
 					if (empty($thisuser)) {
 						if (empty($redirect_url)) $redirect_url = $app->get_redirect_url($_SERVER['REQUEST_URI']);
@@ -100,15 +116,17 @@ if (empty($nav_tab_selected)) $nav_tab_selected = "";
 					<li class="header">Admin Functions</li>
 					<li<?php if ($nav_tab_selected == "install") echo ' class="active"'; ?>><a href="/install.php?key=<?php echo AppSettings::getParam('operator_key'); ?>"><i class="fa fa-download"></i> <span>Install</span></a></li>
 					<li<?php if ($nav_tab_selected == "import") echo ' class="active"'; ?>><a href="/import/"><i class="fa fa-plus-square"></i> <span>Import</span></a></li>
+					<li<?php if ($nav_tab_selected == "manage_blockchains") echo ' class="active"'; ?>><a href="/manage_blockchains/"><i class="fa fa-cube"></i> <span>Manage Blockchains</span></a></li>
+					<li<?php if ($nav_tab_selected == "manage_currencies") echo ' class="active"'; ?>><a href="/manage_currencies/"><i class="fa fa-signal"></i> <span>Manage Currencies</span></a></li>
+					<li<?php if ($nav_tab_selected == "analytics") echo ' class="active"'; ?>><a href="/analytics/"><i class="fa fa-table"></i> <span>Analytics</span></a></li>
 				</ul>
 				<?php
 			}
-			if ($nav_tab_selected == "cards" || $nav_tab_selected == "accounts") { ?>
+			if ($nav_tab_selected == "cards" || ($nav_tab_selected == "accounts" && empty($game))) { ?>
 				<ul class="sidebar-menu" data-widget="tree">
 					<li class="header">Cards</li>
 					<li id="section_link_cards"><a href="/cards/?start_section=cards"<?php if ($nav_subtab_selected == "cards") echo ' onclick="thisPageManager.open_page_section(\'cards\'); return false;"'; ?>><i class="fa fa-address-book"></i> <span>My Cards</span></a></li>
 					<li id="section_link_add_card"><a href="/cards/?start_section=add_card"<?php if ($nav_subtab_selected == "cards") echo ' onclick="thisPageManager.open_page_section(\'add_card\'); return false;"'; ?>><i class="fa fa-link"></i> <span>Connect a Card</span></a></li>
-					<li id="section_link_withdraw_btc"><a href="/cards/?start_section=withdraw_btc"<?php if ($nav_subtab_selected == "cards") echo ' onclick="thisPageManager.open_page_section(\'withdraw_btc\'); return false;"'; ?>><i class="fa fa-exchange-alt"></i> <span>Withdraw Bitcoins</span></a></li>
 					<li<?php if ($nav_subtab_selected == "manage") echo ' class="active"'; ?>><a href="/cards/?action=manage"><i class="fa fa-print"></i> <span>Print cards</span></a></li>
 					<li<?php if ($nav_subtab_selected == "create") echo ' class="active"'; ?>><a href="/cards/?action=create"><i class="fa fa-plus-circle"></i> <span>Create cards</span></a></li>
 					<?php if (empty($thisuser)) { ?><li<?php if ($nav_subtab_selected == "redeem") echo ' class="active"'; ?>><a href="/redeem/"><i class="fa fa-check-square"></i> <span>Redeem a card</span></a></li><?php } ?>
@@ -118,18 +136,23 @@ if (empty($nav_tab_selected)) $nav_tab_selected = "";
 			else if (!empty($game)) { ?>
 				<ul class="sidebar-menu" data-widget="tree">
 					<li class="header"><?php echo $game->db_game['name']; ?></li>
-					<li<?php if ($nav_tab_selected == "game_page") echo ' class="active"'; ?>><a href="/<?php echo $game->db_game['url_identifier']; ?>/"><i class="fa fa-info-circle"></i> <span><?php echo $game->db_game['name']; ?></span></a></li>
+					<?php if (empty(AppSettings::getParam('limited_navigation'))) { ?>
+						<li<?php if ($nav_tab_selected == "game_page") echo ' class="active"'; ?>><a href="/<?php echo $game->db_game['url_identifier']; ?>/"><i class="fa fa-info-circle"></i> <span><?php echo $game->db_game['name']; ?></span></a></li>
+					<?php } ?>
 					<li id="tabcell0"><a <?php if ($nav_tab_selected == "wallet") echo 'href="" onclick="thisPageManager.tab_clicked(0); return false;"'; else echo 'href="/wallet/'.$game->db_game['url_identifier'].'/?initial_tab=0"'; ?>><i class="fa fa-play"></i> <span>Play Now</span></a></li>
 					<?php if ($game->db_game['public_players'] == 1) { ?>
 					<li id="tabcell1"><a <?php if ($nav_tab_selected == "wallet") echo 'href="" onclick="thisPageManager.tab_clicked(1); return false;"'; else echo 'href="/wallet/'.$game->db_game['url_identifier'].'/?initial_tab=1"'; ?>><i class="fa fa-users"></i> <span>Players</span></a></li>
 					<?php } ?>
 					<li id="tabcell2"><a <?php if ($nav_tab_selected == "wallet") echo 'href="" onclick="thisPageManager.tab_clicked(2); return false;"'; else echo 'href="/wallet/'.$game->db_game['url_identifier'].'/?initial_tab=2"'; ?>><i class="fa fa-cogs"></i> <span>Settings</span></a></li>
-					<li id="tabcell4"><a <?php if ($nav_tab_selected == "wallet") echo 'href="" onclick="thisPageManager.tab_clicked(4); return false;"'; else echo 'href="/wallet/'.$game->db_game['url_identifier'].'/?initial_tab=4"'; ?>><i class="fa fa-exchange-alt"></i> <span>Deposit or Withdraw</span></a></li>
-					<li id="tabcell5"><a <?php if ($nav_tab_selected == "wallet") echo 'href="" onclick="thisPageManager.tab_clicked(5); return false;"'; else echo 'href="/wallet/'.$game->db_game['url_identifier'].'/?initial_tab=5"'; ?>><i class="fa fa-envelope"></i> <span>Invitations</span></a></li>
+					<li id="tabcell4"><a <?php if ($nav_tab_selected == "wallet") echo 'href="" onclick="thisPageManager.tab_clicked(4); return false;"'; else echo 'href="/wallet/'.$game->db_game['url_identifier'].'/?initial_tab=4"'; ?>><i class="fa fa-exchange-alt"></i> <span>Send &amp; Receive</span></a></li>
 					<li<?php if ($nav_tab_selected == "explorer" && $explore_mode == "my_bets") echo ' class="active"'; ?>><a href="/explorer/games/<?php echo $game->db_game['url_identifier']; ?>/my_bets/"><i class="fa fa-chart-area"></i> <span>My Bets</span></a></li>
-					<li<?php if ($nav_tab_selected == "explorer" && $explore_mode != "my_bets") echo ' class="active"'; ?>><a href="/explorer/games/<?php echo $game->db_game['url_identifier']; ?>/events/"><i class="fa fa-cube"></i> <span>Explorer</span></a></li>
+					<?php if (empty(AppSettings::getParam('limited_navigation'))) { ?>
+						<li id="tabcell5"><a <?php if ($nav_tab_selected == "wallet") echo 'href="" onclick="thisPageManager.tab_clicked(5); return false;"'; else echo 'href="/wallet/'.$game->db_game['url_identifier'].'/?initial_tab=5"'; ?>><i class="fa fa-envelope"></i> <span>Invitations</span></a></li>
+						<li<?php if ($nav_tab_selected == "explorer" && $explore_mode != "my_bets") echo ' class="active"'; ?>><a href="/explorer/games/<?php echo $game->db_game['url_identifier']; ?>/events/"><i class="fa fa-cube"></i> <span>Explorer</span></a></li>
+					<?php } ?>
 					<?php if ($app->user_can_edit_game($thisuser, $game)) { ?>
-					<li<?php if ($nav_tab_selected == "manage_game") echo ' class="active"'; ?>><a href="/manage/<?php echo $game->db_game['url_identifier']; ?>/"><i class="fa fa-edit"></i> <span>Manage this Game</span></a></li>
+					<li<?php if ($nav_tab_selected == "peers") echo ' class="active"'; ?>><a href="/peers/<?php echo $game->db_game['url_identifier']; ?>"><i class="fa fa-wifi"></i> <span>Manage Peers</span></a></li>
+					<li<?php if ($nav_tab_selected == "manage_game") echo ' class="active"'; ?>><a href="/manage/<?php echo $game->db_game['url_identifier']; ?>/?next=internal_settings"><i class="fa fa-edit"></i> <span>Manage this Game</span></a></li>
 					<?php } ?>
 				</ul>
 				<?php
@@ -152,13 +175,17 @@ if (empty($nav_tab_selected)) $nav_tab_selected = "";
 				?>
 				<li<?php if ($nav_tab_selected == "wallet" && empty($game)) echo ' class="active"'; ?>><a href="/wallet/"><i class="fa fa-cubes"></i> <span>My Games</span></a></li>
 				<li<?php if ($nav_tab_selected == "accounts") echo ' class="active"'; ?>><a href="/accounts/"><i class="fa fa-user-circle"></i> <span>My Accounts</span></a></li>
+				<?php if (empty(AppSettings::getParam('limited_navigation'))) { ?>
 				<li<?php if ($nav_tab_selected == "cards") echo ' class="active"'; ?>><a href="/cards/"><i class="fa fa-id-card"></i> <span>My Cards</span><?php
 				if ($cardcount > 0) echo '<span class="pull-right-container"><small class="label pull-right bg-red">'.$cardcount.'</small></span>';
 				?></a></li>
 				<li<?php if ($nav_tab_selected == "download") echo ' class="active"'; ?>><a target="_blank" href="https://github.com/polycash/polycash"><i class="fa fa-download"></i> <span>Download</span></a></li>
 				<li<?php if ($nav_tab_selected == "explorer") echo ' class="active"'; ?>><a href="/explorer/<?php if (!empty($game)) echo "games/".$game->db_game['url_identifier']."/blocks/"; ?>"><i class="fa fa-cube"></i> <span>Blockchain Explorer</span></a></li>
 				<li<?php if ($nav_tab_selected == "api") echo ' class="active"'; ?>><a href="/api/"><i class="fa fa-code"></i> <span>API</span></a></li>
+				<?php if (!empty($thisuser) && $thisuser->new_game_permission()) { ?>
 				<li<?php if ($nav_tab_selected == "manage") echo ' class="active"'; ?>><a href="/manage/"><i class="fa fa-plus-circle"></i> <span>Create a New Game</span></a></li>
+				<?php } ?>
+				<?php } ?>
 			</ul>
 			<?php
 			// Not relevant: disabled for now
@@ -170,9 +197,9 @@ if (empty($nav_tab_selected)) $nav_tab_selected = "";
 					$db_categories = $app->run_query("SELECT * FROM categories WHERE category_level=0 ORDER BY display_rank ASC;");
 					
 					while ($db_category = $db_categories->fetch()) {
-						$subcategories = $app->run_query("SELECT * FROM categories WHERE parent_category_id=:category_id ORDER BY display_rank ASC;", ['category_id'=>$db_category['category_id']]);
+						$subcategories = $app->run_query("SELECT * FROM categories WHERE parent_category_id=:category_id ORDER BY display_rank ASC;", ['category_id'=>$db_category['category_id']])->fetchAll();
 						
-						if ($subcategories->rowCount() > 0) {
+						if (count($subcategories) > 0) {
 							echo '<li class="treeview';
 							if (!empty($selected_category) && $selected_category['category_id'] == $db_category['category_id']) echo " active";
 							echo '">';
@@ -183,7 +210,7 @@ if (empty($nav_tab_selected)) $nav_tab_selected = "";
 							echo '<span class="pull-right-container"><i class="fa fa-angle-left pull-right"></i></span>';
 							echo '</a><ul class="treeview-menu">';
 							echo '<li><a href="/'.$db_category['url_identifier'].'/">All</a></li>'."\n";
-							while ($subcategory = $subcategories->fetch()) {
+							foreach ($subcategories as $subcategory) {
 								echo '<li';
 								if (!empty($selected_subcategory) && $selected_subcategory['category_id'] == $subcategory['category_id']) echo ' class="active"';
 								echo '><a href="/'.$db_category['url_identifier'].'/'.$subcategory['url_identifier'].'/">'.$subcategory['category_name']."</a></li>\n";

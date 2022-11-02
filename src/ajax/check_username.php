@@ -12,7 +12,7 @@ if ($action == "generate") {
 	$html = "<p>Please write down the following username and password:</p>\n";
 	$html .= "<p><b>Username:</b> &nbsp;&nbsp;&nbsp; $username</p>\n";
 	$html .= "<p><b>Password:</b> &nbsp;&nbsp;&nbsp; $password</p>\n";
-	$html .= "<p><button class=\"btn btn-success\" onclick=\"thisPageManager.login();\">Continue</button></p>\n";
+	$html .= "<p><button class=\"btn btn-success\" onclick=\"thisPageManager.login();\" id=\"generate_login_btn\">Continue</button></p>\n";
 	$html .= "<input type=\"hidden\" id=\"generate_username\" name=\"generate_username\" value=\"".$username."\" />\n";
 	$html .= "<input type=\"hidden\" id=\"generate_password\" name=\"generate_password\" value=\"".$password."\" />\n";
 	
@@ -29,7 +29,7 @@ else {
 			
 			if ($matched_user) {
 				if ($matched_user['login_method'] == "email") {
-					$message = "We just sent you a verification email. Please open that email to log in.";
+					$message = User::email_login_message();
 					$status_code = 2;
 				}
 				else {
@@ -38,19 +38,19 @@ else {
 				}
 			}
 			else {
-				if (strpos($username, '@') === false) {
+				if (empty(AppSettings::getParam('sendgrid_api_key')) || strpos($username, '@') === false) {
 					$message = "To sign up, please enter your password.";
 					$status_code = 4;
 				}
 				else {
-					$message = "We just sent you a verification email. Please open your inbox and click the link to finish creating your account.";
+					$message = User::email_login_message();
 					$status_code = 1;
 				}
 			}
 			
 			$app->output_message($status_code, $message, false);
 		}
-		else $app->output_message(5, "Error: the username you entered is too short. Aliases must be at least 4 characters.", false);
+		else $app->output_message(5, "Error: the username you entered is too short. Usernames must be at least 4 characters.", false);
 	}
 	else $app->output_message(6, "You're already logged in.", false);
 }
